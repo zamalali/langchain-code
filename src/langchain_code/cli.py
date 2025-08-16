@@ -9,7 +9,7 @@ from rich.style import Style
 from rich.text import Text
 from pyfiglet import Figlet
 from .config import resolve_provider
-from .agent.bootstrap import build_agent
+from .agent.react import build_react_agent
 from .workflows.feature_impl import FEATURE_INSTR
 from .workflows.bug_fix import BUGFIX_INSTR
 
@@ -83,7 +83,7 @@ def chat(
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
 ):
     provider = resolve_provider(llm)
-    agent = build_agent(provider=provider, project_dir=project_dir)
+    agent = build_react_agent(provider=provider, project_dir=project_dir)
 
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
 
@@ -107,7 +107,7 @@ def feature(
     apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
 ):
     provider = resolve_provider(llm)
-    agent = build_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=FEATURE_INSTR)
+    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=FEATURE_INSTR)
     console.print(banner(provider, project_dir, "Feature Implementation"))
     result = agent.invoke({"input": request})
     console.print(result["output"])
@@ -122,7 +122,7 @@ def fix(
     apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
 ):
     provider = resolve_provider(llm)
-    agent = build_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=BUGFIX_INSTR)
+    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=BUGFIX_INSTR)
 
     bug_input = request or ""
     if log:
