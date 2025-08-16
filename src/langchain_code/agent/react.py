@@ -12,26 +12,18 @@ from ..tools.fs_local import (
 )
 from ..tools.search import make_glob_tool, make_grep_tool
 from ..tools.shell import make_run_cmd_tool
-
-BASE_SYSTEM = """You are a coding agent running in a terminal.
-You can reason and act with tools until the task is complete.
-Always:
-1) Make a brief plan.
-2) Use minimal tool calls to gather context (glob/grep/read).
-3) Propose edits with small, safe changes. Prefer edit_by_diff.
-4) If a test command is provided, run it to verify.
-5) Summarize results and next steps.
-
-Output diffs or concrete commands rather than long prose."""
+from ..workflows.base_system import BASE_SYSTEM
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from ..mcp_loader import get_mcp_tools
 import asyncio
 
-
+try: 
+    from langchain_tavily import TavilySearch
+except Exception: 
+    TavilySearch = None  
 def build_prompt(instruction_seed: Optional[str]) -> ChatPromptTemplate:
     system_extra = ("\n\n" + instruction_seed) if instruction_seed else ""
-    # Removed the chat_history placeholder; AgentExecutor will still manage tool messages via agent_scratchpad
     prompt = ChatPromptTemplate.from_messages([
         ("system", BASE_SYSTEM + system_extra),
         ("human", "{input}"),
@@ -40,7 +32,7 @@ def build_prompt(instruction_seed: Optional[str]) -> ChatPromptTemplate:
     return prompt
 
 
-def build_agent(
+def build_react_agent(
     provider: str,
     project_dir: Path,
     apply: bool = False,
@@ -61,7 +53,8 @@ def build_agent(
 
     mcp_tools = asyncio.run(get_mcp_tools())
     tools.extend(mcp_tools)
-   
+    if TavilySearch:
+        tools.append(TavilySearch(max_results=5, topic="general"))
 
     prompt = build_prompt(instruction_seed)
     agent = create_tool_calling_agent(model, tools, prompt)
