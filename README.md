@@ -20,12 +20,31 @@
 
 -   **🤖 Interactive Chat:** Have a conversation with the agent about your project.
 -   **✨ Feature Implementation:** Describe a new feature, and the agent will plan and implement it.
---  **🐞 Bug Fixes:** Provide a bug description or a stack trace, and the agent will diagnose and patch the code.
+-  **🐞 Bug Fixes:** Provide a bug description or a stack trace, and the agent will diagnose and patch the code.
 -   **🛠️ Tool-Based:** Uses a set of tools for file system operations, code editing, and running commands.
 -   **🔒 Safe by Default:** Requires your confirmation before applying any file edits or running any commands. Use the `--apply` flag to override.
 -   **🧠 Multi-Provider:** Supports multiple LLM providers (currently Anthropic and Google Gemini).
 
-## Installation
+## How It Works
+
+LangCode uses a ReAct-style agent loop to process your requests. It has access to a set of tools to interact with your project's file system and execute commands.
+
+### Available Tools
+
+-   **`list_dir`**: List files and directories at a given path.
+-   **`read_file`**: Read the content of a file.
+-   **`edit_by_diff`**: Apply changes to a file using a diff format. This is the primary way the agent modifies code.
+-   **`write_file`**: Create or overwrite a file with new content.
+-   **`glob`**: Find files using glob patterns (e.g., `**/*.py`).
+-   **`grep`**: Search for a regex pattern within files.
+-   **`run_cmd`**: Execute a shell command. For safety, this requires user confirmation unless `--apply` is used.
+
+The agent uses these tools to gather context, understand your code, and make the necessary changes to fulfill your request.
+
+
+## Getting Started
+
+### 1. Installation
 
 First, ensure you have Python 3.10 or newer. You can install LangCode using pip:
 
@@ -33,16 +52,16 @@ First, ensure you have Python 3.10 or newer. You can install LangCode using pip:
 pip install langchain-code
 ```
 
-## Configuration
+### 2. Configuration
 
-The agent requires API keys for the desired LLM provider. It loads these from a `.env` file in your project directory.
+The agent requires API keys for your chosen LLM provider. It loads these from a `.env` file in your project directory.
 
-1.  Create a `.env` file in the root of your project:
+1.  **Create a `.env` file** in the root of your project:
     ```bash
     touch .env
     ```
 
-2.  Add your API keys to the file. For example:
+2.  **Add your API keys** to the file. For example:
     ```env
     # For Anthropic Claude
     ANTHROPIC_API_KEY="sk-ant-..."
@@ -51,15 +70,15 @@ The agent requires API keys for the desired LLM provider. It loads these from a 
     GOOGLE_API_KEY="AIzaSy..."
     ```
 
-The agent will automatically detect which provider to use based on the available environment variables. You can also explicitly choose a provider with the `--llm` option.
+The agent will automatically detect which provider to use based on the available environment variables. You can also explicitly choose a provider with the `--llm` option (e.g., `--llm gemini`).
 
-## Usage
+### 3. Usage
 
 The main entry point is the `langcode` command, which has three sub-commands: `chat`, `feature`, and `fix`.
 
-### `langcode chat`
+#### `langcode chat`
 
-Opens an interactive session to chat with the agent about your project.
+Opens an interactive session to chat with the agent about your project. It's useful for asking questions, understanding code, or planning changes.
 
 **Usage:**
 ```bash
@@ -71,14 +90,11 @@ langcode chat [OPTIONS]
 # Start a chat session in the current directory
 langcode chat
 
-# Specify a different project directory
-langcode chat --project-dir /path/to/your/project
-
-# Explicitly choose the LLM provider
+# Start a session using a specific LLM provider
 langcode chat --llm gemini
 ```
 
-### `langcode feature`
+#### `langcode feature`
 
 Implements a new feature from a single request. The agent will plan the changes, write the code, and optionally run tests to verify it.
 
@@ -90,18 +106,18 @@ langcode feature [OPTIONS] <REQUEST>
 **Example:**
 ```bash
 # Request a new feature
-langcode feature "Add a dark mode toggle in the settings panel"
+langcode feature "Add a /health endpoint to the main API"
 
-# Provide a test command to verify the implementation
-langcode feature "Add a /health endpoint" --test-cmd "pytest -q"
+# Verify the implementation with a test command
+langcode feature "Refactor the user model to use UUIDs" --test-cmd "pytest -q"
 
-# Allow the agent to apply edits and run commands without confirmation
-langcode feature "Refactor the user model to use UUIDs" --apply
+# Allow the agent to apply edits without confirmation
+langcode feature "Add a dark mode toggle" --apply
 ```
 
-### `langcode fix`
+#### `langcode fix`
 
-Diagnoses and fixes a bug. You can describe the bug or provide a log file with a stack trace.
+Diagnoses and fixes a bug. You can describe the bug or provide a log file containing a stack trace.
 
 **Usage:**
 ```bash
@@ -116,11 +132,8 @@ langcode fix "The login button is not working on the main page"
 # Provide an error log file for context
 langcode fix --log "errors.log"
 
-# Combine a description with a log file
-langcode fix "Fix the crash on image upload" --log "upload-crash.log"
-
-# Run tests to verify the fix
-langcode fix "Fix the off-by-one error in pagination" --test-cmd "npm test"
+# Combine a description with a log file and verify with a test
+langcode fix "Fix the crash on image upload" --log "crash.log" --test-cmd "npm test"
 ```
 
 ## Contributing
