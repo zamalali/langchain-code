@@ -1,6 +1,8 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
+import sys
+import asyncio
 
 import typer
 from rich.console import Console
@@ -13,6 +15,7 @@ from .agent.react import build_react_agent
 from .workflows.feature_impl import FEATURE_INSTR
 from .workflows.bug_fix import BUGFIX_INSTR
 
+from langchain_core.messages import HumanMessage, AIMessage
 
 def print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light"):
     """Print a single-shot 'LangCode' ASCII banner with a strong green L→R gradient."""
@@ -86,17 +89,52 @@ def chat(
     agent = build_react_agent(provider=provider, project_dir=project_dir)
 
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
-
     console.print(banner(provider, project_dir, "LangChain Code Agent", interactive=True))
+
+    history: list = []  # keep multi-turn memory
+
+    def _maybe_coerce_img_command(raw: str) -> str:
+        """
+        Syntax: /img <path1> <path2> ... :: <prompt text>
+        Example: /img assets/ui.png :: summarize the UX issues
+        Produces a clear instruction so the agent calls the tool.
+        """
+        s = raw.strip()
+        if not s.startswith("/img"):
+            return raw
+        try:
+            rest = s[len("/img"):].strip()
+            if "::" in rest:
+                paths_part, prompt_text = rest.split("::", 1)
+                prompt_text = prompt_text.strip()
+            else:
+                paths_part, prompt_text = rest, ""
+            paths = [p for p in paths_part.split() if p]
+            # steer the model to call the tool explicitly
+            return (
+                f'Please call the tool "process_multimodal" with '
+                f"image_paths={paths} and text={prompt_text!r}. "
+                f"After the tool returns, summarize the result."
+            )
+        except Exception:
+            return raw
+
     try:
         while True:
             user = typer.prompt("> ")
             if not user.strip():
                 continue
-            result = agent.invoke({"input": user})
-            console.print(result["output"])
+
+            coerced = _maybe_coerce_img_command(user)
+            result = agent.invoke({"input": coerced, "chat_history": history})
+            output = result.get("output", "")
+            console.print(output)
+
+            history.append(HumanMessage(content=coerced))
+            history.append(AIMessage(content=output))
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
+
 
 @app.command(help="POC Task 1: Implement a feature end-to-end (plan → search → edit → verify).")
 def feature(

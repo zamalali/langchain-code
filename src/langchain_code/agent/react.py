@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import BaseTool
+from langchain_core.tools import tool, BaseTool
 
 from ..config import get_model
 from ..tools.fs_local import (
@@ -12,8 +12,9 @@ from ..tools.fs_local import (
 )
 from ..tools.search import make_glob_tool, make_grep_tool
 from ..tools.shell import make_run_cmd_tool
-from ..workflows.base_system import BASE_SYSTEM
+from ..tools.processor import make_process_multimodal_tool
 
+from ..workflows.base_system import BASE_SYSTEM
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from ..mcp_loader import get_mcp_tools
 import asyncio
@@ -26,6 +27,7 @@ def build_prompt(instruction_seed: Optional[str]) -> ChatPromptTemplate:
     system_extra = ("\n\n" + instruction_seed) if instruction_seed else ""
     prompt = ChatPromptTemplate.from_messages([
         ("system", BASE_SYSTEM + system_extra),
+        MessagesPlaceholder("chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder("agent_scratchpad"),
     ])
@@ -49,8 +51,9 @@ def build_react_agent(
         make_edit_by_diff_tool(str(project_dir), apply),
         make_write_file_tool(str(project_dir), apply),
         make_run_cmd_tool(str(project_dir), apply, test_cmd),
-    ]
+        make_process_multimodal_tool(str(project_dir), model),
 
+    ]
     mcp_tools = asyncio.run(get_mcp_tools())
     tools.extend(mcp_tools)
     if TavilySearch:
