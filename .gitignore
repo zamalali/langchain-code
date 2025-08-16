@@ -27,3 +27,4 @@ node_modules/
 *.orig
 *.lock
 /.ipynb_checkpoints
+test.py

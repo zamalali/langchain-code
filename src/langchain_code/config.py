@@ -15,7 +15,6 @@ def resolve_provider(cli_llm: str | None) -> str:
 def get_model(provider: str):
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        # You can change the model name here if you like
         return ChatAnthropic(model="claude-3-7-sonnet-2025-05-14", temperature=0.2)
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
