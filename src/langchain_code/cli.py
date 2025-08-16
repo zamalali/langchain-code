@@ -16,7 +16,6 @@ from .workflows.bug_fix import BUGFIX_INSTR
 
 def print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light"):
     """Print a single-shot 'LangCode' ASCII banner with a strong green L→R gradient."""
-    # --- inner helpers (kept private to this function) ---
     def _hex_to_rgb(h): h = h.lstrip("#"); return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
     def _lerp(a, b, t): return int(a + (b - a) * t)
     def _interpolate_palette(palette, width):
@@ -42,11 +41,9 @@ def print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient=
                 t.append(ch if ch == " " else ch, Style(color=ramp[j], bold=True))
             console.print(t)
 
-    # --- build figlet lines ---
     fig = Figlet(font=font)
     lines = fig.renderText(text).rstrip("\n").splitlines()
 
-    # Strong, saturated greens (dark → light). Flip if requested.
     palette = ["#052e1e", "#064e3b", "#065f46", "#047857", "#059669", "#16a34a", "#22c55e", "#34d399"]
     if gradient == "light_to_dark":
         palette = list(reversed(palette))
@@ -88,7 +85,6 @@ def chat(
     provider = resolve_provider(llm)
     agent = build_agent(provider=provider, project_dir=project_dir)
 
-    # console.print(banner(provider, project_dir, "LangChain Code Agent", interactive=True))
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
 
     console.print(banner(provider, project_dir, "LangChain Code Agent", interactive=True))
@@ -142,4 +138,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# This code is part of the langchain-code package and provides a command-line interface
