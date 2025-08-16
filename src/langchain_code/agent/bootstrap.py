@@ -25,6 +25,9 @@ Always:
 Output diffs or concrete commands rather than long prose."""
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from ..mcp_loader import get_mcp_tools
+import asyncio
+
 
 def build_prompt(instruction_seed: Optional[str]) -> ChatPromptTemplate:
     system_extra = ("\n\n" + instruction_seed) if instruction_seed else ""
@@ -46,7 +49,6 @@ def build_agent(
 ) -> AgentExecutor:
     model = get_model(provider)
 
-    # Build tools with captured config (no .bind())
     tools: List[BaseTool] = [
         make_glob_tool(str(project_dir)),
         make_grep_tool(str(project_dir)),
@@ -56,6 +58,10 @@ def build_agent(
         make_write_file_tool(str(project_dir), apply),
         make_run_cmd_tool(str(project_dir), apply, test_cmd),
     ]
+
+    mcp_tools = asyncio.run(get_mcp_tools())
+    tools.extend(mcp_tools)
+   
 
     prompt = build_prompt(instruction_seed)
     agent = create_tool_calling_agent(model, tools, prompt)
