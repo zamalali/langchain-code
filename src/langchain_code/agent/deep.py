@@ -36,7 +36,6 @@ def build_deep_agent(
 
     model = get_model(provider)
 
-    # Reuse your real FS + shell tools (so the deep agent can actually edit & verify)
     tools: List[BaseTool] = [
         make_glob_tool(str(project_dir)),
         make_grep_tool(str(project_dir)),
@@ -55,7 +54,7 @@ def build_deep_agent(
     tool_map: Dict[str, BaseTool] = {getattr(t, "name", f"tool_{i}"): t for i, t in enumerate(tools)}
     fs_names = [n for n in tool_map if n in {"glob", "grep", "list_dir", "read_file", "edit_by_diff", "write_file"}]
     shell_names = [n for n in tool_map if n in {"run_cmd"}]
-    search_names = [n for n in tool_map if "tavily" in n]  # Tavily tool name depends on LC version
+    search_names = [n for n in tool_map if "tavily" in n] 
     reserved = set(fs_names + shell_names + search_names)
     mcp_names = [n for n in tool_map if n not in reserved]
 

@@ -25,6 +25,14 @@
 -   **🔒 Safe by Default:** Requires your confirmation before applying any file edits or running any commands. Use the `--apply` flag to override.
 -   **🧠 Multi-Provider:** Supports multiple LLM providers (currently Anthropic and Google Gemini).
 
+## Highlights
+
+-   **Interactive Debugging:** Use `langcode chat` to navigate your codebase, ask questions, and plan changes with the agent.
+-   **Test-Driven Development:** Provide a test command with your feature request (`--test-cmd`), and the agent will run it to verify its changes.
+-   **Automated Fixes:** Pass an error log to `langcode fix` (`--log`), and the agent will use the stack trace to find and patch the bug.
+-   **Safe and Controllable:** The agent previews all file edits and commands before executing them. Use the `--apply` flag for fully autonomous operation.
+-   **LLM Flexibility:** Switch between supported LLM providers (like Anthropic and Gemini) using the `--llm` option.
+
 ## How It Works
 
 LangCode uses a ReAct-style agent loop to process your requests. It has access to a set of tools to interact with your project's file system and execute commands.
@@ -38,6 +46,7 @@ LangCode uses a ReAct-style agent loop to process your requests. It has access t
 -   **`glob`**: Find files using glob patterns (e.g., `**/*.py`).
 -   **`grep`**: Search for a regex pattern within files.
 -   **`run_cmd`**: Execute a shell command. For safety, this requires user confirmation unless `--apply` is used.
+-   **`process_multimodal`**: Process text and images with the LLM. It can find images by filename or stem.
 
 The agent uses these tools to gather context, understand your code, and make the necessary changes to fulfill your request.
 
@@ -135,6 +144,22 @@ langcode fix --log "errors.log"
 # Combine a description with a log file and verify with a test
 langcode fix "Fix the crash on image upload" --log "crash.log" --test-cmd "npm test"
 ```
+
+### Image Support in Chat
+
+You can ask the agent to analyze images by using the `/img` command in a chat session.
+
+**Syntax:**
+```
+/img <path1> [<path2> ...] :: <prompt>
+```
+
+**Example:**
+```
+> /img assets/screenshot.png :: What's wrong with this UI?
+```
+
+The agent will use the `process_multimodal` tool to understand the image and respond to your prompt.
 
 ## Contributing
 
