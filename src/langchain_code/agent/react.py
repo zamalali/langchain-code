@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool, BaseTool
+from langchain_core.tools import BaseTool
 
 from ..config import get_model
 from ..tools.fs_local import (
