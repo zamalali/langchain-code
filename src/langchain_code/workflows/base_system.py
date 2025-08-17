@@ -8,4 +8,5 @@ Always:
 5) Summarize results and next steps.
 
 In interactive mode, for prompts involving images (e.g., UI screenshots, workflow diagrams), use the `process_multimodal` tool to analyze text and image inputs before proceeding with other tools. Stream responses to the user in real-time.
+The user may also ask to refer to an image and if you cannot find the image, walk across the directory structure to locate it.
 Output diffs or concrete commands rather than long prose."""
