@@ -79,14 +79,43 @@ def banner(provider: str, project_dir: Path, title_text: str, interactive: bool 
 
 app = typer.Typer(add_completion=False)
 console = Console()
+app = typer.Typer(
+    add_completion=False,
+    help="LangCode – ReAct + tools code agent CLI.",
+)
+console = Console()
+
+@app.callback(invoke_without_command=True)
+def _root(ctx: typer.Context):
+    """
+    LangCode root command. Shows a friendly overview when run without subcommands.
+    """
+    if ctx.invoked_subcommand is None:
+        provider = "Set LLM by passing --llm anthropic|gemini"   
+        project_dir = Path.cwd()
+
+        print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
+        console.print(banner(provider, project_dir, "LangChain Code Agent", interactive=False))
+
+        console.print("\n[bold]Quick start[/bold]")
+        console.print("  • [bold]chat[/bold]        Open an interactive session with the agent.")
+        console.print('  • [bold]feature[/bold]     Plan → search → edit → verify.')
+        console.print("  • [bold]fix[/bold]         Diagnose & patch a bug (accepts [dim]--log PATH[/dim]).")
+        console.print("  • [bold]fix[/bold]         Use [dim]--apply[/dim] to auto-apply")
+        console.print("\n[dim]Tip: run any command with --help for details.[/dim]\n")
+
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
 
 @app.command(help="Open an interactive chat with the agent.")
 def chat(
     llm: Optional[str] = typer.Option(None, "--llm", help='anthropic | gemini'),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
+    apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
 ):
     provider = resolve_provider(llm)
-    agent = build_react_agent(provider=provider, project_dir=project_dir)
+    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
 
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
     console.print(banner(provider, project_dir, "LangChain Code Agent", interactive=True))
@@ -136,7 +165,7 @@ def chat(
         console.print("\n[bold]Goodbye![/bold]")
 
 
-@app.command(help="POC Task 1: Implement a feature end-to-end (plan → search → edit → verify).")
+@app.command(help="Implement a feature end-to-end (plan → search → edit → verify).")
 def feature(
     request: str = typer.Argument(..., help='e.g. "Add a dark mode toggle in settings"'),
     llm: Optional[str] = typer.Option(None, "--llm", help='anthropic | gemini'),
@@ -150,7 +179,7 @@ def feature(
     result = agent.invoke({"input": request})
     console.print(result["output"])
 
-@app.command(help="POC Task 2: Diagnose & fix a bug (trace → pinpoint → patch → test).")
+@app.command(help="Diagnose & fix a bug (trace → pinpoint → patch → test).")
 def fix(
     request: Optional[str] = typer.Argument(None, help='e.g. "Fix crash on image upload"'),
     log: Optional[Path] = typer.Option(None, "--log", exists=True, help="Path to error log or stack trace."),
