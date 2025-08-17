@@ -35,20 +35,39 @@
 
 ## How It Works
 
-LangCode uses a ReAct-style agent loop to process your requests. It has access to a set of tools to interact with your project's file system and execute commands.
+LangCode operates using a sophisticated agent architecture that dynamically selects the best approach for a given task.
+
+### Hybrid Intelligent LLM Router
+
+At its core, LangCode uses a **Hybrid Intelligent LLM Router** to analyze incoming requests. This router assesses the task's complexity, context size, and requirements (e.g., speed, multimodality) to select the most suitable Large Language Model (LLM) from a registered pool. This ensures that simple, fast tasks are handled by nimble models, while complex, long-context tasks are routed to more powerful ones, optimizing for both performance and cost.
+
+The router uses a combination of rule-based scoring and a multi-armed bandit algorithm, allowing it to learn and adapt over time based on performance feedback.
+
+### Agent Architectures
+
+Based on the task, the router can delegate to different agent architectures:
+
+1.  **ReAct Agent:** A simple and efficient agent that uses a ReAct-style loop for straightforward tasks like answering questions or performing simple file operations.
+2.  **Deep Agent:** For complex, long-horizon tasks like implementing features or fixing bugs, LangCode employs a **Deep Agent**. This agent uses a structured approach with specialized sub-agents:
+    -   **`research-agent`**: Gathers context by searching the web and the local codebase.
+    -   **`code-agent`**: Makes and validates code changes using small, verifiable diffs and running tests.
+    -   **`git-agent`**: Manages version control by staging files and crafting informative commit messages.
+
+This multi-agent system allows for a clear separation of concerns and more robust execution of complex plans.
 
 ### Available Tools
 
--   **`list_dir`**: List files and directories at a given path.
--   **`read_file`**: Read the content of a file.
--   **`edit_by_diff`**: Apply changes to a file using a diff format. This is the primary way the agent modifies code.
--   **`write_file`**: Create or overwrite a file with new content.
--   **`glob`**: Find files using glob patterns (e.g., `**/*.py`).
--   **`grep`**: Search for a regex pattern within files.
--   **`run_cmd`**: Execute a shell command. For safety, this requires user confirmation unless `--apply` is used.
--   **`process_multimodal`**: Process text and images with the LLM. It can find images by filename or stem.
+The agents have access to a curated set of tools to interact with your project:
 
-The agent uses these tools to gather context, understand your code, and make the necessary changes to fulfill your request.
+-   **`list_dir`**: List files and directories.
+-   **`read_file`**: Read a file's content.
+-   **`edit_by_diff`**: Apply changes to a file using a diff, promoting safe and reviewable edits.
+-   **`write_file`**: Create or overwrite a file.
+-   **`glob`**: Find files using glob patterns.
+-   **`grep`**: Search for regex patterns within files.
+-   **`run_cmd`**: Execute shell commands, requiring user confirmation by default.
+-   **`process_multimodal`**: Process text and images, enabling visual understanding.
+-   **MCP Tools**: A suite of tools for interacting with version control, web search, and more.
 
 
 ## Getting Started
