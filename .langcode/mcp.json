@@ -1,12 +1,12 @@
-{
-  "servers": {
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "transport": "stdio",
-      "env": {
-              "GITHUB_TOKEN": "$GITHUB_API_KEY"
-      }
-    }
-  }
-}
+// {
+//   "servers": {
+//     "github": {
+//       "command": "npx",
+//       "args": ["-y", "@modelcontextprotocol/server-github"],
+//       "transport": "stdio",
+//       "env": {
+//               "GITHUB_TOKEN": "$GITHUB_API_KEY"
+//       }
+//     }
+//   }
+// }
