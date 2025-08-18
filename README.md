@@ -187,3 +187,19 @@ Contributions are welcome! Please feel free to open an issue or submit a pull re
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## Branches
+
+### `main`
+
+This is the main branch of the project. It contains the latest stable version of the code.
+
+### `dev`
+
+This is the development branch. It contains the latest features and bug fixes. It is not guaranteed to be stable.
+
+### `draft-work`
+
+This is a draft work branch. It is used for experimental features and code that is not yet ready for production. It is not guaranteed to be functional.
+
+**Note:** This branch is a dumping ground for ideas and work-in-progress code. It is not guaranteed to be stable or even functional. For stable, working code, please refer to the `dev` and `main` branches.
