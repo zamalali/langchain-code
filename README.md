@@ -202,4 +202,5 @@ This is the development branch. It contains the latest features and bug fixes. I
 
 This is a draft work branch. It is used for experimental features and code that is not yet ready for production. It is not guaranteed to be functional.
 
-**Note:** This branch is a dumping ground for ideas and work-in-progress code. It is not guaranteed to be stable or even functional. For stable, working code, please refer to the `dev` and `main` branches.
+**Note:** This branch is a dumping ground for ideas and work-in-progress code. It is not guaranteed to be stable or even functional. For stable, working code, please refer to the `dev` and `main` branches. The `draft-work` branch is meant for rough work only.
+
