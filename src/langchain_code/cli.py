@@ -13,9 +13,10 @@ from rich import box
 from pyfiglet import Figlet
 
 from .config import resolve_provider
-from .agent.react import build_react_agent
+from .agent.react import build_react_agent, build_deep_agent  
 from .workflows.feature_impl import FEATURE_INSTR
 from .workflows.bug_fix import BUGFIX_INSTR
+from .workflows.auto import AUTO_DEEP_INSTR    
 from langchain_core.messages import HumanMessage, AIMessage
 
 
@@ -177,16 +178,33 @@ def chat(
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
     apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
+    mode: str = typer.Option("react", "--mode", help="react | deep"),
+    auto: bool = typer.Option(False, "--auto", help="Autonomy mode: plan+act with no questions (deep mode only)."),
 ):
     """
     Start a bounded LangCode chat session with persistent visuals and safe controls.
     """
     provider = resolve_provider(llm)
-    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
+    mode = (mode or "react").lower()
+    if mode not in {"react", "deep"}:
+        mode = "react"
+
+    # Build the chosen agent
+    if mode == "deep":
+        seed = AUTO_DEEP_INSTR if auto else None
+        agent = build_deep_agent(
+            provider=provider,
+            project_dir=project_dir,
+            apply=apply,
+            instruction_seed=seed,
+        )
+    else:
+        agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
 
     _print_session_header("LangChain Code Agent • Chat", provider, project_dir, interactive=True, apply=apply)
 
-    history: list = []
+    history: list = []   # ReAct history (LangChain messages)
+    msgs: list = []      # Deep history (LangGraph-style dicts)
 
     try:
         while True:
@@ -197,18 +215,32 @@ def chat(
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
                 _print_session_header("LangChain Code Agent • Chat", provider, project_dir, interactive=True, apply=apply)
+                history.clear()
+                msgs.clear()
                 continue
             if low in {"exit", "quit", ":q", "/exit"}:
                 console.print("\n[bold]Goodbye![/bold]")
                 break
 
             coerced = _maybe_coerce_img_command(user)
-            res = agent.invoke({"input": coerced, "chat_history": history})
-            output = res.get("output", "") if isinstance(res, dict) else str(res)
+
+            if mode == "deep":
+                msgs.append({"role": "user", "content": coerced})
+                res = agent.invoke({"messages": msgs})
+                if isinstance(res, dict) and "messages" in res and res["messages"]:
+                    last = res["messages"][-1]
+                    output = getattr(last, "content", last.get("content") if isinstance(last, dict) else str(last))
+                    msgs = res["messages"]
+                else:
+                    output = str(res)
+            else:
+                res = agent.invoke({"input": coerced, "chat_history": history})
+                output = res.get("output", "") if isinstance(res, dict) else str(res)
+                history.append(HumanMessage(content=coerced))
+                history.append(AIMessage(content=output))
+
             console.print(_panel_agent_output(output))
 
-            history.append(HumanMessage(content=coerced))
-            history.append(AIMessage(content=output))
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
 
