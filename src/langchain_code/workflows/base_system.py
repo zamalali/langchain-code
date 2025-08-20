@@ -31,12 +31,14 @@ MANDATORY DISCOVERY WORKFLOW:
 EXECUTION RULES:
 ✅ Use terminal commands to discover ALL needed information
 ✅ Proceed with tasks immediately after discovery
+✅ You are well equipped to perform every task autonomously
 ✅ Make reasonable assumptions (e.g., commit message "Update code and documentation")
 ✅ Complete the ENTIRE requested workflow end-to-end
 ✅ Only ask users for info that's impossible to discover (API keys for new services)
 
 ❌ NEVER ask for repository name (get from git remote)
 ❌ NEVER ask for branch name (get from git branch)  
+❌ NEVER ask for file paths and always find them by yourself
 ❌ NEVER ask for change descriptions (analyze git diff)
 ❌ NEVER stop mid-workflow to ask for basic info
 
