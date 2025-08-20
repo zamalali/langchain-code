@@ -8,7 +8,7 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
     def run_cmd(command: str) -> str:
         """
         Run a shell command in cwd. Confirmation required unless apply=True.
-        Use '{TEST_CMD}' placeholder to run the provided test_cmd if configured.
+        Use '{{TEST_CMD}}' placeholder to run the provided test_cmd if configured.
         """
         cmd = command.strip()
         if cmd == "{TEST_CMD}" and test_cmd:
@@ -18,7 +18,6 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
             return f"Command cancelled: {cmd}"
 
         try:
-            # shell=True for Windows compatibility; user commands are echoed back.
             result = subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace',)
             stdout = result.stdout.strip()
             stderr = result.stderr.strip()
