@@ -19,7 +19,7 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
 
         try:
             # shell=True for Windows compatibility; user commands are echoed back.
-            result = subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True)
+            result = subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace',)
             stdout = result.stdout.strip()
             stderr = result.stderr.strip()
             code = result.returncode
