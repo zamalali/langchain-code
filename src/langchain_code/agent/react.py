@@ -25,10 +25,15 @@ try:
 except Exception: 
     TavilySearch = None  
 
+def _escape_braces(text: str) -> str:
+    return text.replace("{", "{{").replace("}", "}}")
+
+
 def build_prompt(instruction_seed: Optional[str]) -> ChatPromptTemplate:
     system_extra = ("\n\n" + instruction_seed) if instruction_seed else ""
+    system_text = _escape_braces(BASE_SYSTEM + system_extra) 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", BASE_SYSTEM + system_extra),
+        ("system", system_text),
         MessagesPlaceholder("chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder("agent_scratchpad"),

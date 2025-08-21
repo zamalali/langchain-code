@@ -55,6 +55,17 @@ Based on the task, the router can delegate to different agent architectures:
 
 This multi-agent system allows for a clear separation of concerns and more robust execution of complex plans.  The `deepagent` command directly utilizes this Deep Agent architecture.
 
+### Deep Agent State
+
+The Deep Agent maintains its state in a `DeepAgentState` object, which includes:
+
+-   **Todos:** A list of tasks to be completed, managed by the `write_todos` tool.
+-   **Files:** A virtual file system that the agent can use to stage changes before applying them to your actual file system.
+
+### DEEP AUTOPILOT Mode
+
+For fully autonomous operation, the Deep Agent can be run in **DEEP AUTOPILOT** mode. In this mode, the agent works silently without asking for confirmation and produces a single final report of its actions. This is a powerful feature for complex tasks that can be clearly defined upfront.
+
 ### Available Tools
 
 The agents have access to a curated set of tools to interact with your project:
@@ -67,7 +78,12 @@ The agents have access to a curated set of tools to interact with your project:
 -   **`grep`**: Search for regex patterns within files.
 -   **`run_cmd`**: Execute shell commands, requiring user confirmation by default.
 -   **`process_multimodal`**: Process text and images, enabling visual understanding.
+-   **`write_todos`**: Create and manage a todo list for the Deep Agent.
 -   **MCP Tools**: A suite of tools for interacting with version control, web search, and more.
+
+#### MCP Tools
+
+MCP (Multi-Server MCP Client) tools are dynamically loaded from a `mcp.json` configuration file. This allows you to extend the agent's capabilities by connecting it to other servers and services. The configuration file can be placed in the `.langcode` directory in your project's root or your home directory.
 
 #### `deepagent` CLI Modes
 
@@ -79,7 +95,13 @@ The `deepagent` command offers several modes for executing tasks, each with spec
 
 These modes can be combined to perform complex, multi-step operations.  For example, you could use `deepagent research code git` to implement a new feature, automatically committing the changes to version control.
 
+## Workflows
 
+LangCode includes several pre-defined workflows for common development tasks:
+
+-   **`auto`**: Executes a task in DEEP AUTOPILOT mode.
+-   **`bug_fix`**: A guided workflow for diagnosing and fixing bugs.
+-   **`feature_impl`**: A guided workflow for implementing new features.
 
 ## Getting Started
 
@@ -189,6 +211,14 @@ deepagent <REQUEST>
 # Request a complex task
 deepagent "Implement a new user authentication system using JWT"
 ```
+
+### Beta CLI
+
+The `cli_beta.py` file contains a beta version of the CLI that may include experimental features. It is not guaranteed to be stable.
+
+### Memory
+
+The `memory` directory is currently empty but is reserved for future development of memory-related features.
 
 ### Image Support in Chat
 
