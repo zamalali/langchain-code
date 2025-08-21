@@ -18,6 +18,7 @@ from .workflows.feature_impl import FEATURE_INSTR
 from .workflows.bug_fix import BUGFIX_INSTR
 from .workflows.auto import AUTO_DEEP_INSTR    
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import ToolMessage
 
 
 app = typer.Typer(add_completion=False, help="LangCode – ReAct + tools code agent CLI.")
@@ -147,31 +148,48 @@ def _maybe_coerce_img_command(raw: str) -> str:
     except Exception:
         return raw
 
+
 def _extract_last_content(messages: list) -> str:
     """Best-effort to get string content of the last message."""
     if not messages:
         return ""
     last = messages[-1]
-    # LangChain BaseMessage has .content; dict fallback for safety
     c = getattr(last, "content", None)
+
+    # If regular string, return it
     if isinstance(c, str):
-        return c
+        return c.strip()
+
+    if isinstance(c, list):
+        parts = []
+        for p in c:
+            # Common LC/Graph part formats:
+            # {'type': 'text', 'text': '...'}   or   {'text': '...'}
+            if isinstance(p, dict):
+                if 'text' in p and isinstance(p['text'], str):
+                    parts.append(p['text'])
+                elif p.get('type') == 'text' and isinstance(p.get('data') or p.get('content'), str):
+                    parts.append(p.get('data') or p.get('content'))
+            elif isinstance(p, str):
+                parts.append(p)
+        return "\n".join(parts).strip()
+
+    # Dict message
     if isinstance(last, dict):
         c = last.get("content", "")
-        return c if isinstance(c, str) else str(c)
-    return str(last)
+        if isinstance(c, str):
+            return c.strip()
+        if isinstance(c, list):
+            return "\n".join(str(x) for x in c if isinstance(x, str)).strip()
+
+    # Fallback
+    return (str(c) if c is not None else str(last)).strip()
 
 def _has_tool_activity(messages: list) -> bool:
     """Detect any tool IO in the transcript."""
-    try:
-        from langchain_core.messages import ToolMessage
-    except Exception:
-        ToolMessage = type("ToolMessageMock", (), {})  # safety
-
     for m in messages or []:
         if isinstance(m, ToolMessage):
             return True
-        # Some runtimes tag differently
         if getattr(m, "type", "") == "tool":
             return True
         if isinstance(m, dict) and m.get("type") == "tool":
@@ -179,18 +197,46 @@ def _has_tool_activity(messages: list) -> bool:
     return False
 
 def _saw_run_cmd(messages: list) -> bool:
-    """Heuristic: your run_cmd output includes '$(cmd)' and '(exit N)'. Look for that."""
+    """Heuristic for your run_cmd tool (prints '$ <cmd>' and '(exit N)')."""
     for m in messages or []:
         c = getattr(m, "content", None)
-        if isinstance(c, str):
-            if "\n(exit " in c or c.startswith("$ "):
-                return True
-        elif isinstance(m, dict):
+        if isinstance(c, str) and ("\n(exit " in c or c.startswith("$ ")):
+            return True
+        if isinstance(m, dict):
             c = m.get("content")
             if isinstance(c, str) and ("\n(exit " in c or c.startswith("$ ")):
                 return True
     return False
 
+def _collect_recent_tool_summaries(messages: list, max_items: int = 3, max_chars_each: int = 400) -> list[str]:
+    """Grab the most recent ToolMessage snippets to show something meaningful."""
+    out = []
+    for m in reversed(messages or []):
+        is_tool = isinstance(m, ToolMessage) or (isinstance(m, dict) and m.get("type") == "tool")
+        if not is_tool:
+            continue
+        text = getattr(m, "content", None)
+        if not isinstance(text, str):
+            if isinstance(m, dict):
+                text = m.get("content")
+        if isinstance(text, str) and text.strip():
+            out.append(text.strip()[:max_chars_each])
+            if len(out) >= max_items:
+                break
+    return list(reversed(out))
+
+def _synthesize_fallback_final(messages: list) -> str:
+    """Guaranteed, concise FINAL message when the model outputs nothing."""
+    tools = _collect_recent_tool_summaries(messages)
+    tool_lines = "\n".join(f"  - {t}" for t in tools) if tools else "  - (no recent tool output)"
+    return (
+        "FINAL:\n"
+        "- Completed TODOS with statuses: (unknown; model returned empty output)\n"
+        "- Files changed: (unknown)\n"
+        "- Important command outputs (short):\n"
+        f"{tool_lines}\n"
+        "- Follow-ups/blockers: Model produced a blank response. Re-run the action or inspect tool logs above."
+    )
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
@@ -225,36 +271,26 @@ def chat(
     mode: str = typer.Option("react", "--mode", help="react | deep"),
     auto: bool = typer.Option(False, "--auto", help="Autonomy mode: plan+act with no questions (deep mode only)."),
 ):
-    """
-    Start a bounded LangCode chat session with persistent visuals and safe controls.
-    """
     provider = resolve_provider(llm)
     mode = (mode or "react").lower()
     if mode not in {"react", "deep"}:
         mode = "react"
 
-    # Build the chosen agent
+    # Build agent
     if mode == "deep":
         seed = AUTO_DEEP_INSTR if auto else None
-        agent = build_deep_agent(
-            provider=provider,
-            project_dir=project_dir,
-            apply=apply,
-            instruction_seed=seed,
-        )
+        agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=apply, instruction_seed=seed)
     else:
         agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
 
     _print_session_header(
-        "LangChain Code Agent • Chat" if mode == "react" else "LangChain Code Agent • Deep Chat",
-        provider,
-        project_dir,
-        interactive=True,
-        apply=apply
+        "LangChain Code Agent • Deep Chat" if mode == "deep" else "LangChain Code Agent • Chat",
+        provider, project_dir, interactive=True, apply=apply
     )
 
-    history: list = []   
-    msgs: list = []     
+    history: list = []
+    msgs: list = []
+
     try:
         while True:
             user = console.input(PROMPT).strip()
@@ -264,7 +300,7 @@ def chat(
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
                 _print_session_header(
-                    "LangChain Code Agent • Chat" if mode == "react" else "LangChain Code Agent • Deep Chat",
+                    "LangChain Code Agent • Deep Chat" if mode == "deep" else "LangChain Code Agent • Chat",
                     provider, project_dir, interactive=True, apply=apply
                 )
                 history.clear()
@@ -277,29 +313,25 @@ def chat(
             coerced = _maybe_coerce_img_command(user)
 
             if mode == "deep":
-                # Append user message
                 msgs.append({"role": "user", "content": coerced})
 
-                # Invoke once
                 res = agent.invoke({"messages": msgs})
                 if isinstance(res, dict) and "messages" in res:
                     msgs = res["messages"]
                 else:
-                    # Fallback to raw output
-                    output = str(res)
-                    console.print(_panel_agent_output(output))
+                    # Absolute last resort if agent returns something unexpected
+                    console.print(_panel_agent_output(_synthesize_fallback_final(msgs)))
                     continue
 
-                # ——— Guard #1: require tool activity in deep mode ———
-                # If no tools were used, nudge and re-run (at most twice).
+                # Guardrail A: force tool activity
                 retries = 0
                 while not _has_tool_activity(msgs) and retries < 2:
                     msgs.append({
                         "role": "system",
                         "content": (
                             "Compliance check: You have not used any tools yet. "
-                            "Continue silently by calling discovery/read tools (glob/grep/read_file) "
-                            "AND at least one run_cmd, then complete the task. Do not produce FINAL yet."
+                            "Silently proceed to discover files (glob/grep/list_dir), read targets (read_file), "
+                            "and run at least one run_cmd. Do not finalize yet."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
@@ -307,42 +339,59 @@ def chat(
                         msgs = res["messages"]
                     retries += 1
 
-                # ——— Guard #2: require at least one run_cmd before FINAL ———
-                # If we still haven't seen a run_cmd signature, push it to do so.
+                # Guardrail B: must execute run_cmd at least once before FINAL
                 if not _saw_run_cmd(msgs):
                     msgs.append({
                         "role": "system",
                         "content": (
-                            "Compliance check: You must execute at least one run_cmd (e.g., git status/diff/add/commit/push "
-                            "or tests) and ground results in stdout/stderr with exit codes before FINAL."
+                            "Compliance check: Execute at least one run_cmd (e.g., git status/diff/add/commit/push "
+                            "or tests) and ground results with stdout/stderr and exit code before FINAL."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
                     if isinstance(res, dict) and "messages" in res:
                         msgs = res["messages"]
 
-                # ——— Guard #3 (auto mode): enforce single FINAL message ———
-                last_text = _extract_last_content(msgs)
-                if auto and not str(last_text).strip().startswith("FINAL:"):
+                # Guardrail C: enforce non-empty final output
+                last_text = _extract_last_content(msgs).strip()
+                if auto and not last_text.startswith("FINAL:"):
                     msgs.append({
                         "role": "system",
                         "content": (
-                            "Auto mode: Produce exactly one final message starting with 'FINAL:' only after you have used "
-                            "tools and executed run_cmd at least once. Do not narrate intermediate steps."
+                            "Auto mode: Produce exactly one final message that starts with 'FINAL:' "
+                            "after using tools and at least one run_cmd. No intermediate chatter."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
                     if isinstance(res, dict) and "messages" in res:
                         msgs = res["messages"]
-                        last_text = _extract_last_content(msgs)
+                        last_text = _extract_last_content(msgs).strip()
 
-                # Render
-                console.print(_panel_agent_output(_extract_last_content(msgs)))
+                # If still empty, synthesize a fallback FINAL from tool logs
+                output = _synthesize_fallback_final(msgs) if not last_text else last_text
+                console.print(_panel_agent_output(output))
 
             else:
                 # ReAct mode
                 res = agent.invoke({"input": coerced, "chat_history": history})
                 output = res.get("output", "") if isinstance(res, dict) else str(res)
+
+                # Blank-output guardrail for ReAct
+                if not str(output).strip():
+                    # Try to mine intermediate steps if available
+                    steps = res.get("intermediate_steps") if isinstance(res, dict) else None
+                    if steps:
+                        # steps is [(tool, output), ...] usually; show last few
+                        previews = []
+                        for pair in steps[-3:]:
+                            try:
+                                previews.append(str(pair))
+                            except Exception:
+                                continue
+                        output = "Model returned empty output. Recent intermediate steps:\n" + "\n".join(previews)
+                    else:
+                        output = "Model returned empty output. No intermediate steps available."
+
                 console.print(_panel_agent_output(output))
                 history.append(HumanMessage(content=coerced))
                 history.append(AIMessage(content=output))
