@@ -3,6 +3,7 @@ from pathlib import Path
 from difflib import unified_diff
 from langchain_core.tools import tool
 from ..safety.confirm import confirm_action
+import shutil
 
 def _rooted(project_dir: str, path: str) -> Path:
     p = Path(project_dir).joinpath(path).resolve()
@@ -82,3 +83,28 @@ def make_edit_by_diff_tool(project_dir: str, apply: bool):
         p.write_text(new_text, encoding="utf-8")
         return f"Applied 1 edit to {path}.\nDiff:\n{diff}"
     return edit_by_diff
+
+def make_delete_path_tool(project_dir: str, apply: bool):
+    @tool("delete_path", return_direct=False)
+    def delete_path(path: str) -> str:
+        """
+        Delete a file or directory (recursive).
+        Prefer `git rm <path>` for tracked files when appropriate; this tool is for
+        untracked paths or when you explicitly want to remove from the working tree.
+        Shows what it will delete and asks confirmation unless apply=True.
+        """
+        p = _rooted(project_dir, path)
+        if not p.exists():
+            return f"{path} not found."
+        if not confirm_action(f"Delete {path}? (recursive for directories)", apply):
+            return f"Delete cancelled for {path}."
+        try:
+            if p.is_dir():
+                shutil.rmtree(p)
+                return f"Deleted directory {path}"
+            else:
+                p.unlink()
+                return f"Deleted file {path}"
+        except Exception as e:
+            return f"Error deleting {path}: {e}"
+    return delete_path

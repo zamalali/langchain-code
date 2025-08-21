@@ -147,6 +147,50 @@ def _maybe_coerce_img_command(raw: str) -> str:
     except Exception:
         return raw
 
+def _extract_last_content(messages: list) -> str:
+    """Best-effort to get string content of the last message."""
+    if not messages:
+        return ""
+    last = messages[-1]
+    # LangChain BaseMessage has .content; dict fallback for safety
+    c = getattr(last, "content", None)
+    if isinstance(c, str):
+        return c
+    if isinstance(last, dict):
+        c = last.get("content", "")
+        return c if isinstance(c, str) else str(c)
+    return str(last)
+
+def _has_tool_activity(messages: list) -> bool:
+    """Detect any tool IO in the transcript."""
+    try:
+        from langchain_core.messages import ToolMessage
+    except Exception:
+        ToolMessage = type("ToolMessageMock", (), {})  # safety
+
+    for m in messages or []:
+        if isinstance(m, ToolMessage):
+            return True
+        # Some runtimes tag differently
+        if getattr(m, "type", "") == "tool":
+            return True
+        if isinstance(m, dict) and m.get("type") == "tool":
+            return True
+    return False
+
+def _saw_run_cmd(messages: list) -> bool:
+    """Heuristic: your run_cmd output includes '$(cmd)' and '(exit N)'. Look for that."""
+    for m in messages or []:
+        c = getattr(m, "content", None)
+        if isinstance(c, str):
+            if "\n(exit " in c or c.startswith("$ "):
+                return True
+        elif isinstance(m, dict):
+            c = m.get("content")
+            if isinstance(c, str) and ("\n(exit " in c or c.startswith("$ ")):
+                return True
+    return False
+
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
@@ -201,11 +245,16 @@ def chat(
     else:
         agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
 
-    _print_session_header("LangChain Code Agent • Chat", provider, project_dir, interactive=True, apply=apply)
+    _print_session_header(
+        "LangChain Code Agent • Chat" if mode == "react" else "LangChain Code Agent • Deep Chat",
+        provider,
+        project_dir,
+        interactive=True,
+        apply=apply
+    )
 
-    history: list = []   # ReAct history (LangChain messages)
-    msgs: list = []      # Deep history (LangGraph-style dicts)
-
+    history: list = []   
+    msgs: list = []     
     try:
         while True:
             user = console.input(PROMPT).strip()
@@ -214,7 +263,10 @@ def chat(
 
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
-                _print_session_header("LangChain Code Agent • Chat", provider, project_dir, interactive=True, apply=apply)
+                _print_session_header(
+                    "LangChain Code Agent • Chat" if mode == "react" else "LangChain Code Agent • Deep Chat",
+                    provider, project_dir, interactive=True, apply=apply
+                )
                 history.clear()
                 msgs.clear()
                 continue
@@ -225,24 +277,79 @@ def chat(
             coerced = _maybe_coerce_img_command(user)
 
             if mode == "deep":
+                # Append user message
                 msgs.append({"role": "user", "content": coerced})
+
+                # Invoke once
                 res = agent.invoke({"messages": msgs})
-                if isinstance(res, dict) and "messages" in res and res["messages"]:
-                    last = res["messages"][-1]
-                    output = getattr(last, "content", last.get("content") if isinstance(last, dict) else str(last))
+                if isinstance(res, dict) and "messages" in res:
                     msgs = res["messages"]
                 else:
+                    # Fallback to raw output
                     output = str(res)
+                    console.print(_panel_agent_output(output))
+                    continue
+
+                # ——— Guard #1: require tool activity in deep mode ———
+                # If no tools were used, nudge and re-run (at most twice).
+                retries = 0
+                while not _has_tool_activity(msgs) and retries < 2:
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "Compliance check: You have not used any tools yet. "
+                            "Continue silently by calling discovery/read tools (glob/grep/read_file) "
+                            "AND at least one run_cmd, then complete the task. Do not produce FINAL yet."
+                        )
+                    })
+                    res = agent.invoke({"messages": msgs})
+                    if isinstance(res, dict) and "messages" in res:
+                        msgs = res["messages"]
+                    retries += 1
+
+                # ——— Guard #2: require at least one run_cmd before FINAL ———
+                # If we still haven't seen a run_cmd signature, push it to do so.
+                if not _saw_run_cmd(msgs):
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "Compliance check: You must execute at least one run_cmd (e.g., git status/diff/add/commit/push "
+                            "or tests) and ground results in stdout/stderr with exit codes before FINAL."
+                        )
+                    })
+                    res = agent.invoke({"messages": msgs})
+                    if isinstance(res, dict) and "messages" in res:
+                        msgs = res["messages"]
+
+                # ——— Guard #3 (auto mode): enforce single FINAL message ———
+                last_text = _extract_last_content(msgs)
+                if auto and not str(last_text).strip().startswith("FINAL:"):
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "Auto mode: Produce exactly one final message starting with 'FINAL:' only after you have used "
+                            "tools and executed run_cmd at least once. Do not narrate intermediate steps."
+                        )
+                    })
+                    res = agent.invoke({"messages": msgs})
+                    if isinstance(res, dict) and "messages" in res:
+                        msgs = res["messages"]
+                        last_text = _extract_last_content(msgs)
+
+                # Render
+                console.print(_panel_agent_output(_extract_last_content(msgs)))
+
             else:
+                # ReAct mode
                 res = agent.invoke({"input": coerced, "chat_history": history})
                 output = res.get("output", "") if isinstance(res, dict) else str(res)
+                console.print(_panel_agent_output(output))
                 history.append(HumanMessage(content=coerced))
                 history.append(AIMessage(content=output))
 
-            console.print(_panel_agent_output(output))
-
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
+
 
 
 @app.command(help="Implement a feature end-to-end (plan → search → edit → verify).")

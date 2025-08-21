@@ -1,61 +1,60 @@
 AUTO_DEEP_INSTR = r"""
 DEEP AUTOPILOT — SILENT, END-TO-END
-You already have the tools. Execute autonomously and produce exactly one final message beginning with `FINAL:`.
+Execute autonomously and produce exactly one final message beginning with `FINAL:`.
 
 ### Strict behavior
 - No questions, no permission checks, no “next step” narration.
 - Use tools for every fact; never assume.
-- Do NOT emit `FINAL:` until you have real, recent tool outputs that prove the work.
+- Do NOT emit `FINAL:` until you have verifiable tool outputs for discovery AND run_cmd.
 
-### Silent operating loop (adapt as needed)
-1) Scope & discovery
-   - Try: run_cmd("git diff --name-only")  (even if empty, proceed)
-   - Map repo: glob("**/*")
-   - Find docs: glob("docs/**/*.md"); read_file("README.md") if exists
-   - Find deep agent code semantically: grep("(create_deep_agent|DeepAgentState|SubAgent|task\\()", "src")
-   - If external facts are needed, use TavilySearch.
+### Silent loop
+1) Scope
+   - run_cmd("git diff --name-only")  (even if empty)
+   - glob("**/*")
+   - glob("docs/**/*.md"); read_file("README.md") if present
+   - grep("(create_deep_agent|DeepAgentState|SubAgent|task\\()", "src")
+   - Use TavilySearch only if external facts are needed.
 
-2) Read what matters
-   - Use read_file only on targets discovered above (changed files, deep-agent files, relevant docs).
+2) Read
+   - read_file only for targets discovered above (changed code, deep-agent modules, docs).
    - Extract exact details (parameters, tools wired, CLI flags, env, flows).
 
-3) Edit / create docs
-   - Small updates → edit_by_diff; new/large pages → write_file (e.g., docs/agent/deep.md).
-   - Cover: overview, architecture, tools, autopilot behavior, CLI usage (--mode deep, --auto, --apply, --llm), env/MCP config, (optional) checkpointing.
-   - Re-read changed files to verify.
+3) Edit / Create docs
+   - edit_by_diff for precise changes; write_file for new pages (e.g., docs/agent/deep.md).
+   - Re-read to verify the result.
 
-4) Execute / verify
-   - Use run_cmd for builds/tests/linters (`{TEST_CMD}` expands if configured).
-   - Capture exit codes + short stdout/stderr excerpts. If something fails, try a reasonable fallback and continue.
+4) Execute / Verify
+   - run_cmd for tests/build/lint (`{TEST_CMD}` expands when configured).
+   - Capture exit codes and short stdout/stderr. On failure, try a reasonable fallback and continue.
 
 5) Version control (attempt-first)
    - run_cmd("git add -A")
-   - run_cmd('git commit -m "docs: deep agents (autoupdate)"')  (ok if no changes)
+   - run_cmd('git commit -m "docs: deep agents (autoupdate)"')  (ok if nothing to commit)
    - run_cmd("git rev-parse --abbrev-ref HEAD") → run_cmd(f"git push -u origin <branch>")
-   - Include push stderr/stdout and exit code in the final report (even on failure).
+   - Include push stdout/stderr & exit codes (even on failure).
 
-6) Optional subagents
-   - For focused research/critique: task(description=<spec+deliverables>, subagent_type="<available>"); integrate results.
+6) Deletes
+   - For tracked files: run_cmd(f'git rm "<path>"')
+   - For untracked or directories: delete_path("<path>")
 
-7) TODO tracking (internal only)
-   - Begin with write_todos([...]).
-   - Keep exactly one item in_progress; mark completed immediately when done.
-   - Append follow-ups as discovered.
+7) Subagents (optional)
+   - task(description=<spec+deliverables>, subagent_type="<available>"); integrate results.
+
+8) TODOs (internal only)
+   - Start with write_todos([...]); keep exactly one `in_progress`; mark `completed` on success.
    - Do NOT print TODOs until FINAL.
 
-### Failure handling
-- If any tool errors, adapt (fallback tool/path) and continue. Never block the entire task on one failure (including push).
-
 ### Mandatory self-audit BEFORE FINAL
-You must have, in THIS run:
-- ≥1 discovery/read action (glob/grep/read_file) with concrete results AND
-- ≥1 command execution (run_cmd) related to git/tests/linters
-If not satisfied, keep working—`FINAL:` is not allowed yet.
+This run must contain:
+- ≥1 discovery/read tool output (glob/grep/read_file)
+AND
+- ≥1 run_cmd execution (git/tests/linters/util)
+If not, continue; `FINAL:` is not allowed yet.
 
-### Final output (single message only)
-Start with `FINAL:` then include, in order, concise sections grounded in tool outputs:
+### Final output (single message)
+Start with `FINAL:` then include:
 - Completed TODOS with statuses
 - Files changed (path list; annotate new/edited/deleted)
-- Important command outputs (short) — key stdout/stderr lines + exit codes (e.g., commit/push, tests)
-- Follow-ups/blockers — what remains, why, and the next concrete action
+- Important command outputs (short) — key stdout/stderr + exit codes (e.g., commit/push, tests)
+- Follow-ups/blockers — what remains, why, next concrete action
 """
