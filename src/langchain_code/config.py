@@ -18,5 +18,5 @@ def get_model(provider: str):
         return ChatAnthropic(model="claude-3-7-sonnet-2025-05-14", temperature=0.2)
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.2)
+        return ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.2)
     raise ValueError(f"Unknown provider: {provider}")

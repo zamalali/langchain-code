@@ -13,10 +13,10 @@ from rich import box
 from pyfiglet import Figlet
 
 from .config import resolve_provider
-from .agent.react import build_react_agent, build_deep_agent  
+from .agent.react import build_react_agent, build_deep_agent
 from .workflows.feature_impl import FEATURE_INSTR
 from .workflows.bug_fix import BUGFIX_INSTR
-from .workflows.auto import AUTO_DEEP_INSTR    
+from .workflows.auto import AUTO_DEEP_INSTR
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.messages import ToolMessage
 
@@ -26,14 +26,25 @@ console = Console()
 PROMPT = "[bold green]langcode[/bold green] [dim]›[/dim] "
 
 
-def print_langcode_ascii(console: Console, text: str = "LangCode", font: str = "ansi_shadow", gradient: str = "dark_to_light") -> None:
+def print_langcode_ascii(
+    console: Console,
+    text: str = "LangCode",
+    font: str = "ansi_shadow",
+    gradient: str = "dark_to_light",
+) -> None:
     """
     Render a single-shot ASCII banner with a left-to-right green gradient.
     """
-    def _hex_to_rgb(h): h = h.lstrip("#"); return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-    def _lerp(a, b, t): return int(a + (b - a) * t)
+    def _hex_to_rgb(h):
+        h = h.lstrip("#")
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+    def _lerp(a, b, t):
+        return int(a + (b - a) * t)
+
     def _interpolate_palette(palette, width):
-        if width <= 1: return [palette[0]]
+        if width <= 1:
+            return [palette[0]]
         out, steps_total = [], width - 1
         for x in range(width):
             pos = x / steps_total
@@ -63,7 +74,16 @@ def print_langcode_ascii(console: Console, text: str = "LangCode", font: str = "
     _print_block_with_horizontal_gradient(lines, palette)
 
 
-def session_banner(provider: Optional[str], project_dir: Path, title_text: str, interactive: bool = False, apply: bool = False, test_cmd: Optional[str] = None, tips: Optional[list[str]] = None) -> Panel:
+def session_banner(
+    provider: Optional[str],
+    project_dir: Path,
+    title_text: str,
+    *,
+    interactive: bool = False,
+    apply: bool = False,
+    test_cmd: Optional[str] = None,
+    tips: Optional[list[str]] = None,
+) -> Panel:
     """
     Build a framed status panel showing provider, project, and optional session tips.
     """
@@ -108,13 +128,32 @@ def session_banner(provider: Optional[str], project_dir: Path, title_text: str, 
     )
 
 
-def _print_session_header(title: str, provider: Optional[str], project_dir: Path, *, interactive: bool = False, apply: bool = False, test_cmd: Optional[str] = None, tips: Optional[list[str]] = None) -> None:
+def _print_session_header(
+    title: str,
+    provider: Optional[str],
+    project_dir: Path,
+    *,
+    interactive: bool = False,
+    apply: bool = False,
+    test_cmd: Optional[str] = None,
+    tips: Optional[list[str]] = None,
+) -> None:
     """
     Clear the screen and draw the LangCode header, banner, and a separator rule.
     """
     console.clear()
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
-    console.print(session_banner(provider, project_dir, title, interactive=interactive, apply=apply, test_cmd=test_cmd, tips=tips))
+    console.print(
+        session_banner(
+            provider,
+            project_dir,
+            title,
+            interactive=interactive,
+            apply=apply,
+            test_cmd=test_cmd,
+            tips=tips,
+        )
+    )
     console.print(Rule(style="green"))
 
 
@@ -148,7 +187,9 @@ def _maybe_coerce_img_command(raw: str) -> str:
     except Exception:
         return raw
 
-MAX_RECOVERY_STEPS = 2
+
+MAX_RECOVERY_STEPS = 2  # (currently unused but kept for future guardrail logic)
+
 
 def _looks_like_requesting_paths(text: str) -> bool:
     """Detect model asking user for file paths or permission instead of acting."""
@@ -164,6 +205,7 @@ def _looks_like_requesting_paths(text: str) -> bool:
         "do you want me to",
     ]
     return any(n in t for n in needles)
+
 
 def _self_heal_directive(user_goal: str) -> str:
     """Strong, generic directive that forces discovery + action without questions."""
@@ -183,6 +225,7 @@ def _self_heal_directive(user_goal: str) -> str:
         f"User goal/context: {user_goal}\n"
         "Execute now."
     )
+
 
 def _extract_last_content(messages: list) -> str:
     """Best-effort to get string content of the last message."""
@@ -220,6 +263,7 @@ def _extract_last_content(messages: list) -> str:
     # Fallback
     return (str(c) if c is not None else str(last)).strip()
 
+
 def _has_tool_activity(messages: list) -> bool:
     """Detect any tool IO in the transcript."""
     for m in messages or []:
@@ -230,6 +274,7 @@ def _has_tool_activity(messages: list) -> bool:
         if isinstance(m, dict) and m.get("type") == "tool":
             return True
     return False
+
 
 def _saw_run_cmd(messages: list) -> bool:
     """Heuristic for your run_cmd tool (prints '$ <cmd>' and '(exit N)')."""
@@ -242,6 +287,7 @@ def _saw_run_cmd(messages: list) -> bool:
             if isinstance(c, str) and ("\n(exit " in c or c.startswith("$ ")):
                 return True
     return False
+
 
 def _collect_recent_tool_summaries(messages: list, max_items: int = 3, max_chars_each: int = 400) -> list[str]:
     """Grab the most recent ToolMessage snippets to show something meaningful."""
@@ -260,6 +306,7 @@ def _collect_recent_tool_summaries(messages: list, max_items: int = 3, max_chars
                 break
     return list(reversed(out))
 
+
 def _synthesize_fallback_final(messages: list) -> str:
     """Guaranteed, concise FINAL message when the model outputs nothing."""
     tools = _collect_recent_tool_summaries(messages)
@@ -272,6 +319,7 @@ def _synthesize_fallback_final(messages: list) -> str:
         f"{tool_lines}\n"
         "- Follow-ups/blockers: Model produced a blank response. Re-run the action or inspect tool logs above."
     )
+
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
@@ -286,9 +334,11 @@ def _root(ctx: typer.Context):
             provider_hint,
             project_dir,
             interactive=False,
+            apply=False,
+            test_cmd=None,
             tips=[
                 "Quick start:",
-                "• chat         Open an interactive session with the agent. (supports --apply)",
+                "• chat         Open an interactive session with the agent. (supports --apply in some modes)",
                 "• feature      Plan → search → edit → verify. (supports --apply)",
                 "• fix          Diagnose & patch a bug (use --log PATH). (supports --apply)",
                 "Tip: run any command with --help for details.",
@@ -325,7 +375,6 @@ def _mentions_write_todos_validation(messages: list) -> bool:
 def chat(
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
-    apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
     mode: str = typer.Option("react", "--mode", help="react | deep"),
     auto: bool = typer.Option(False, "--auto", help="Autonomy mode: plan+act with no questions (deep mode only)."),
 ):
@@ -337,16 +386,18 @@ def chat(
     # Build the agent
     if mode == "deep":
         seed = AUTO_DEEP_INSTR if auto else None
-        agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=apply, instruction_seed=seed)
+        agent = build_deep_agent(provider=provider, project_dir=project_dir, instruction_seed=seed, apply=auto,)
         session_title = "LangChain Code Agent • Deep Chat"
+        if auto:
+            session_title += " (Auto)"
     else:
-        agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
+        agent = build_react_agent(provider=provider, project_dir=project_dir)
         session_title = "LangChain Code Agent • Chat"
 
-    _print_session_header(session_title, provider, project_dir, interactive=True, apply=apply)
+    _print_session_header(session_title, provider, project_dir, interactive=True)
 
-    history: list = []  # for ReAct
-    msgs: list = []     # for Deep (LangGraph-style dict messages)
+    history: list = []   # for ReAct
+    msgs: list = []      # for Deep (LangGraph-style dict messages)
 
     try:
         while True:
@@ -356,7 +407,7 @@ def chat(
 
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
-                _print_session_header(session_title, provider, project_dir, interactive=True, apply=apply)
+                _print_session_header(session_title, provider, project_dir, interactive=True)
                 history.clear()
                 msgs.clear()
                 continue
@@ -372,136 +423,80 @@ def chat(
             if mode == "deep":
                 msgs.append({"role": "user", "content": coerced})
 
-                # Autopilot kickoff: push the model to act immediately
                 if auto:
                     msgs.append({
                         "role": "system",
                         "content": (
                             "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
                             "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
-                            "capturing stdout/stderr + exit code. For file deletes prefer `run_cmd(\"git rm -f <path>\")`; "
-                            "fallback to `write_file(path, \"\")` if needed. Then produce one 'FINAL:' report. No questions."
+                            "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
                         )
                     })
 
-                # First invoke
-                res = agent.invoke({"messages": msgs})
-                if isinstance(res, dict) and "messages" in res:
-                    msgs = res["messages"]
-                else:
-                    console.print(_panel_agent_output(_synthesize_fallback_final(msgs)))
+                config = {"configurable": {"recursion_limit": 50}}
+                try:
+                    res = agent.invoke({"messages": msgs}, config=config)
+                    if isinstance(res, dict) and "messages" in res:
+                        msgs = res["messages"]
+                    else:
+                        console.print(_panel_agent_output("Error: Invalid response format from agent"))
+                        continue
+                except Exception as e:
+                    if "recursion" in str(e).lower():
+                        console.print(_panel_agent_output(f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"))
+                    else:
+                        console.print(_panel_agent_output(f"Agent error: {e}"))
                     continue
 
-                # Hotfix: if the graph/model tripped over write_todos validation, tell it how to initialize TODOs
-                if _mentions_write_todos_validation(msgs):
+                # Simple retry for empty responses (max 1 retry)
+                last_content = _extract_last_content(msgs).strip()
+                if not last_content:
                     msgs.append({
                         "role": "system",
-                        "content": (
-                            "If you encountered a validation error calling write_todos (e.g., state.files Field required), "
-                            "re-initialize TODOs by calling `write_todos(todos=[])` (do NOT pass a custom state object), "
-                            "then continue the plan."
-                        ),
+                        "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
                     })
-                    res = agent.invoke({"messages": msgs})
-                    if isinstance(res, dict) and "messages" in res:
-                        msgs = res["messages"]
+                    try:
+                        res = agent.invoke({"messages": msgs}, config=config)
+                        if isinstance(res, dict) and "messages" in res:
+                            msgs = res["messages"]
+                        last_content = _extract_last_content(msgs).strip()
+                    except Exception as e:
+                        last_content = f"Agent failed after retry: {e}"
 
-                # Guardrail A: require tool activity (retry a couple of times)
-                retries = 0
-                while not _has_tool_activity(msgs) and retries < 2:
-                    msgs.append({
-                        "role": "system",
-                        "content": (
-                            "Compliance: No tools used yet. Silently discover repository contents and read targets. "
-                            "Do not finalize."
-                        )
-                    })
-                    res = agent.invoke({"messages": msgs})
-                    if isinstance(res, dict) and "messages" in res:
-                        msgs = res["messages"]
-                    retries += 1
-
-                # Guardrail B: require at least one run_cmd before FINAL
-                if not _saw_run_cmd(msgs):
-                    msgs.append({
-                        "role": "system",
-                        "content": (
-                            "Compliance: Execute at least one run_cmd (git status/diff/add/commit/push or tests) "
-                            "and ground your result with stdout/stderr and exit code before FINAL."
-                        )
-                    })
-                    res = agent.invoke({"messages": msgs})
-                    if isinstance(res, dict) and "messages" in res:
-                        msgs = res["messages"]
-
-                # Self-heal/retry: blank output, path-asking, or missing FINAL in auto
-                recovery = 0
-                last_text = _extract_last_content(msgs).strip()
-                while recovery < MAX_RECOVERY_STEPS and (
-                    not last_text
-                    or (auto and not last_text.startswith("FINAL:"))
-                    or _looks_like_requesting_paths(last_text)
-                    or _mentions_write_todos_validation(msgs)
-                ):
-                    # tighten directive
-                    directive = _self_heal_directive(coerced)
-                    if _mentions_write_todos_validation(msgs):
-                        directive += (
-                            "\n\nALSO: Initialize todos by calling `write_todos(todos=[])` (no state arg). Then continue."
-                        )
-                    msgs.append({"role": "system", "content": directive})
-                    res = agent.invoke({"messages": msgs})
-                    if isinstance(res, dict) and "messages" in res:
-                        msgs = res["messages"]
-                    last_text = _extract_last_content(msgs).strip()
-                    recovery += 1
-
-                # Final enforcement in auto
-                if auto and not last_text.startswith("FINAL:"):
-                    msgs.append({
-                        "role": "system",
-                        "content": (
-                            "Auto mode: Finish execution and output a single 'FINAL:' report now "
-                            "(todos, files changed, key command outputs, follow-ups)."
-                        )
-                    })
-                    res = agent.invoke({"messages": msgs})
-                    if isinstance(res, dict) and "messages" in res:
-                        msgs = res["messages"]
-                        last_text = _extract_last_content(msgs).strip()
-
-                # Never print blank
-                output = _synthesize_fallback_final(msgs) if not last_text else last_text
+                output = last_content or "No response generated."
                 console.print(_panel_agent_output(output))
 
             # ----------------------------
             # ReAct (LangChain) mode
             # ----------------------------
             else:
-                res = agent.invoke({"input": coerced, "chat_history": history})
-                output = res.get("output", "") if isinstance(res, dict) else str(res)
+                try:
+                    res = agent.invoke({"input": coerced, "chat_history": history})
+                    output = res.get("output", "") if isinstance(res, dict) else str(res)
 
-                # Blank-output guardrail
-                if not str(output).strip():
-                    steps = res.get("intermediate_steps") if isinstance(res, dict) else None
-                    if steps:
-                        previews = []
-                        for pair in steps[-3:]:
-                            try:
-                                previews.append(str(pair))
-                            except Exception:
-                                continue
-                        output = "Model returned empty output. Recent intermediate steps:\n" + "\n".join(previews)
-                    else:
-                        output = "Model returned empty output. No intermediate steps available."
+                    # Blank-output guardrail
+                    if not output.strip():
+                        steps = res.get("intermediate_steps") if isinstance(res, dict) else None
+                        if steps:
+                            previews = []
+                            for pair in steps[-3:]:
+                                try:
+                                    previews.append(str(pair))
+                                except Exception:
+                                    continue
+                            output = "Model returned empty output. Recent steps:\n" + "\n".join(previews)
+                        else:
+                            output = "No response generated. Try rephrasing your request."
 
-                console.print(_panel_agent_output(output))
-                history.append(HumanMessage(content=coerced))
-                history.append(AIMessage(content=output))
+                    console.print(_panel_agent_output(output))
+                    history.append(HumanMessage(content=coerced))
+                    history.append(AIMessage(content=output))
+
+                except Exception as e:
+                    console.print(_panel_agent_output(f"ReAct agent error: {e}"))
 
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
-
 
 
 @app.command(help="Implement a feature end-to-end (plan → search → edit → verify).")
@@ -516,9 +511,22 @@ def feature(
     Run the feature workflow once and render the result within the session frame.
     """
     provider = resolve_provider(llm)
-    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=FEATURE_INSTR)
+    agent = build_react_agent(
+        provider=provider,
+        project_dir=project_dir,
+        apply=apply,
+        test_cmd=test_cmd,
+        instruction_seed=FEATURE_INSTR,
+    )
 
-    _print_session_header("LangChain Code Agent • Feature", provider, project_dir, interactive=False, apply=apply, test_cmd=test_cmd)
+    _print_session_header(
+        "LangChain Code Agent • Feature",
+        provider,
+        project_dir,
+        interactive=False,
+        apply=apply,
+        test_cmd=test_cmd,
+    )
     res = agent.invoke({"input": request})
     output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Feature Result"))
@@ -537,16 +545,57 @@ def fix(
     Run the bug-fix workflow once, with optional log input, and render the result within the session frame.
     """
     provider = resolve_provider(llm)
-    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=BUGFIX_INSTR)
+    agent = build_react_agent(
+        provider=provider,
+        project_dir=project_dir,
+        apply=apply,
+        test_cmd=test_cmd,
+        instruction_seed=BUGFIX_INSTR,
+    )
 
     bug_input = request or ""
     if log:
         bug_input += "\n\n--- ERROR LOG ---\n" + Path(log).read_text(encoding="utf-8")
 
-    _print_session_header("LangChain Code Agent • Fix", provider, project_dir, interactive=False, apply=apply, test_cmd=test_cmd)
+    _print_session_header(
+        "LangChain Code Agent • Fix",
+        provider,
+        project_dir,
+        interactive=False,
+        apply=apply,
+        test_cmd=test_cmd,
+    )
     res = agent.invoke({"input": bug_input.strip() or "Fix the bug using the provided log."})
     output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Fix Result"))
+
+
+@app.command(help="Analyze any codebase and generate insights.")
+def analyze(
+    request: str = typer.Argument(..., help='e.g. "What are the main components of this project?"'),
+    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
+):
+    """
+    Run the deep agent to analyze the codebase and generate insights.
+    """
+    provider = resolve_provider(llm)
+    agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=False)
+
+    _print_session_header(
+        "LangChain Code Agent • Analyze",
+        provider,
+        project_dir,
+        interactive=False,
+        apply=False,
+    )
+    res = agent.invoke({"messages": [{"role": "user", "content": request}]})
+    output = (
+        _extract_last_content(res.get("messages", [])).strip()
+        if isinstance(res, dict) and "messages" in res
+        else str(res)
+    )
+    console.print(_panel_agent_output(output, title="Analysis Result"))
 
 
 def main() -> None:
@@ -554,6 +603,7 @@ def main() -> None:
     Entrypoint for the langcode console script.
     """
     app()
+
 
 if __name__ == "__main__":
     main()

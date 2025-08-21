@@ -87,7 +87,7 @@ def make_edit_by_diff_tool(project_dir: str, apply: bool):
 def make_delete_file_tool(project_dir: str, apply: bool):
     @tool("delete_file", return_direct=False)
     def delete_file(path: str) -> str:
-        """Delete a file safely (confirmation unless apply=True)."""
+        """Delete a file safely (confirmation required)."""
         p = _rooted(project_dir, path)
         if not p.exists():
             return f"{path} not found."
