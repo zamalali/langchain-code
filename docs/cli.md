@@ -8,7 +8,7 @@ The CLI is the main entry point for interacting with the LangCode agent. It prov
 
 ### Commands
 
-- **`chat`**: Opens an interactive chat session with the agent.
+- **`chat`**: Opens an interactive chat session with the agent.  Supports image processing via `/img` commands.
 Example:
 ```bash
 langcode chat --llm gemini --project-dir myproject
