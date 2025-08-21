@@ -76,11 +76,20 @@ def _normalize_todos(raw: Any) -> List[Dict[str, str]]:
 
 @tool(description=WRITE_TODOS_DESCRIPTION)
 def write_todos(
-    todos: Any,
-    state: Annotated[DeepAgentState, InjectedState],
-    tool_call_id: Annotated[str, InjectedToolCallId],
+    todos: Any = None,              # now optional
+    items: Any = None,              # common alias models use
+    value: Any = None,              # another alias fallback
+    state: Annotated[DeepAgentState, InjectedState] = None,
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> Command:
-    normalized = _normalize_todos(todos)
+    raw = None
+    for candidate in (todos, items, value):
+        if candidate is not None:
+            raw = candidate
+            break
+    if raw is None:
+        raw = []  # empty list is fine
+    normalized = _normalize_todos(raw)
     return Command(update={
         "todos": normalized,
         "messages": [ToolMessage(f"Updated todos ({len(normalized)} items).", tool_call_id=tool_call_id)],
