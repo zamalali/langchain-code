@@ -240,6 +240,19 @@ The agent will use the `process_multimodal` tool to understand the image and res
 
 Contributions are welcome! Please feel free to open an issue or submit a pull request.
 
+## DeepGit Data Pipeline Workflow
+
+This diagram illustrates DeepGit's Data Pipeline Workflow:
+
+![DeepGit Data Pipeline Workflow](deepgit.png)
+
+The workflow is represented as a series of steps:
+
+1.  **Import of 3 million repositories**: GitHub Ingestion
+2.  **Metadata and README summarization**: Enrichment Step
+3.  **Detection of repository changes**: Hash-Based Check
+4.  **Evaluation of repository quality**: Threshold Filters
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
