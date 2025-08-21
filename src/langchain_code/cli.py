@@ -298,6 +298,29 @@ def _root(ctx: typer.Context):
         raise typer.Exit()
 
 
+def _mentions_write_todos_validation(messages: list) -> bool:
+    """
+    Detect common pydantic/validation complaints around write_todos / state.files.
+    """
+    needles = (
+        "validation error for write_todos",
+        "state.files",
+        "Field required",
+        "errors.pydantic.dev",
+    )
+    for m in messages or []:
+        c = getattr(m, "content", None)
+        if isinstance(c, str):
+            lc = c.lower()
+            if any(n in lc for n in needles):
+                return True
+        elif isinstance(m, dict):
+            c = m.get("content")
+            if isinstance(c, str) and any(n in c.lower() for n in needles):
+                return True
+    return False
+
+
 @app.command(help="Open an interactive chat with the agent.")
 def chat(
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
@@ -322,8 +345,8 @@ def chat(
 
     _print_session_header(session_title, provider, project_dir, interactive=True, apply=apply)
 
-    history: list = []  # ReAct history (LC)
-    msgs: list = []     # Deep history (LangGraph-style dicts)
+    history: list = []  # for ReAct
+    msgs: list = []     # for Deep (LangGraph-style dict messages)
 
     try:
         while True:
@@ -349,19 +372,19 @@ def chat(
             if mode == "deep":
                 msgs.append({"role": "user", "content": coerced})
 
-                # One-time autopilot kickoff per turn (push it to act; no questions)
+                # Autopilot kickoff: push the model to act immediately
                 if auto:
                     msgs.append({
                         "role": "system",
                         "content": (
-                            "AUTOPILOT KICKOFF: Start now. Discover files (glob/list_dir/grep), read targets "
-                            "(read_file), perform edits (edit_by_diff/write_file), run at least one run_cmd "
-                            "(git/tests) with stdout/stderr and exit code, then output one 'FINAL:' report. "
-                            "Do not ask questions."
+                            "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
+                            "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
+                            "capturing stdout/stderr + exit code. For file deletes prefer `run_cmd(\"git rm -f <path>\")`; "
+                            "fallback to `write_file(path, \"\")` if needed. Then produce one 'FINAL:' report. No questions."
                         )
                     })
 
-                # Initial invoke
+                # First invoke
                 res = agent.invoke({"messages": msgs})
                 if isinstance(res, dict) and "messages" in res:
                     msgs = res["messages"]
@@ -369,14 +392,28 @@ def chat(
                     console.print(_panel_agent_output(_synthesize_fallback_final(msgs)))
                     continue
 
-                # Guardrail A: force tool activity if none seen yet
+                # Hotfix: if the graph/model tripped over write_todos validation, tell it how to initialize TODOs
+                if _mentions_write_todos_validation(msgs):
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "If you encountered a validation error calling write_todos (e.g., state.files Field required), "
+                            "re-initialize TODOs by calling `write_todos(todos=[])` (do NOT pass a custom state object), "
+                            "then continue the plan."
+                        ),
+                    })
+                    res = agent.invoke({"messages": msgs})
+                    if isinstance(res, dict) and "messages" in res:
+                        msgs = res["messages"]
+
+                # Guardrail A: require tool activity (retry a couple of times)
                 retries = 0
                 while not _has_tool_activity(msgs) and retries < 2:
                     msgs.append({
                         "role": "system",
                         "content": (
-                            "Compliance check: You have not used any tools yet. "
-                            "Silently discover repository contents and read targets. Do not finalize."
+                            "Compliance: No tools used yet. Silently discover repository contents and read targets. "
+                            "Do not finalize."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
@@ -389,30 +426,37 @@ def chat(
                     msgs.append({
                         "role": "system",
                         "content": (
-                            "Compliance check: Execute at least one run_cmd (git status/diff/add/commit/push or tests) "
-                            "and ground results with stdout/stderr + exit code before FINAL."
+                            "Compliance: Execute at least one run_cmd (git status/diff/add/commit/push or tests) "
+                            "and ground your result with stdout/stderr and exit code before FINAL."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
                     if isinstance(res, dict) and "messages" in res:
                         msgs = res["messages"]
 
-                # Self-heal/retry: blank output or asking for paths? re-invoke with strict directive
+                # Self-heal/retry: blank output, path-asking, or missing FINAL in auto
                 recovery = 0
                 last_text = _extract_last_content(msgs).strip()
                 while recovery < MAX_RECOVERY_STEPS and (
                     not last_text
                     or (auto and not last_text.startswith("FINAL:"))
                     or _looks_like_requesting_paths(last_text)
+                    or _mentions_write_todos_validation(msgs)
                 ):
-                    msgs.append({"role": "system", "content": _self_heal_directive(coerced)})
+                    # tighten directive
+                    directive = _self_heal_directive(coerced)
+                    if _mentions_write_todos_validation(msgs):
+                        directive += (
+                            "\n\nALSO: Initialize todos by calling `write_todos(todos=[])` (no state arg). Then continue."
+                        )
+                    msgs.append({"role": "system", "content": directive})
                     res = agent.invoke({"messages": msgs})
                     if isinstance(res, dict) and "messages" in res:
                         msgs = res["messages"]
                     last_text = _extract_last_content(msgs).strip()
                     recovery += 1
 
-                # Final enforcement in auto: if still not FINAL, ask once explicitly
+                # Final enforcement in auto
                 if auto and not last_text.startswith("FINAL:"):
                     msgs.append({
                         "role": "system",
@@ -426,7 +470,7 @@ def chat(
                         msgs = res["messages"]
                         last_text = _extract_last_content(msgs).strip()
 
-                # Never print a blank panel
+                # Never print blank
                 output = _synthesize_fallback_final(msgs) if not last_text else last_text
                 console.print(_panel_agent_output(output))
 
@@ -437,7 +481,7 @@ def chat(
                 res = agent.invoke({"input": coerced, "chat_history": history})
                 output = res.get("output", "") if isinstance(res, dict) else str(res)
 
-                # Blank-output guardrail for ReAct: surface recent intermediate steps
+                # Blank-output guardrail
                 if not str(output).strip():
                     steps = res.get("intermediate_steps") if isinstance(res, dict) else None
                     if steps:
@@ -457,6 +501,7 @@ def chat(
 
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
+
 
 
 @app.command(help="Implement a feature end-to-end (plan → search → edit → verify).")
