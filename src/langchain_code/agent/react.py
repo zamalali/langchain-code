@@ -9,7 +9,7 @@ from .deep_agents import create_deep_agent
 from .subagents import RESEARCH_SUBAGENT, CRITIQUE_SUBAGENT
 from ..config import get_model
 from ..tools.fs_local import (
-    make_read_file_tool, make_write_file_tool, make_list_dir_tool, make_edit_by_diff_tool, make_delete_path_tool
+    make_read_file_tool, make_write_file_tool, make_list_dir_tool, make_edit_by_diff_tool, make_delete_file_tool
 )
 from ..tools.search import make_glob_tool, make_grep_tool
 from ..tools.shell import make_run_cmd_tool
@@ -53,7 +53,7 @@ def build_react_agent(
         make_read_file_tool(str(project_dir)),
         make_edit_by_diff_tool(str(project_dir), apply),
         make_write_file_tool(str(project_dir), apply),
-        make_delete_path_tool(str(project_dir), apply),
+        make_delete_file_tool(str(project_dir), apply),
         make_run_cmd_tool(str(project_dir), apply, test_cmd),
         make_process_multimodal_tool(str(project_dir), model),
     ]
