@@ -69,6 +69,17 @@ The agents have access to a curated set of tools to interact with your project:
 -   **`process_multimodal`**: Process text and images, enabling visual understanding.
 -   **MCP Tools**: A suite of tools for interacting with version control, web search, and more.
 
+#### `deepagent` CLI Modes
+
+The `deepagent` command offers several modes for executing tasks, each with specific capabilities:
+
+-   **`research`**: Gathers information from various sources, including the web and local files.
+-   **`code`**: Makes and validates code changes using small, verifiable diffs and running tests.
+-   **`git`**: Manages version control by staging files and crafting informative commit messages.
+
+These modes can be combined to perform complex, multi-step operations.  For example, you could use `deepagent research code git` to implement a new feature, automatically committing the changes to version control.
+
+
 
 ## Getting Started
 
