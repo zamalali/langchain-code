@@ -5,7 +5,8 @@
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "transport": "stdio",
       "env": {
-              "GITHUB_TOKEN": "$GITHUB_API_KEY"
+              "GITHUB_TOKEN": "$GITHUB_API_KEY",
+              "GITHUB_TOOLSETS": "repos,issues,pull_requests,actions,code_security"
       }
     }
   }
