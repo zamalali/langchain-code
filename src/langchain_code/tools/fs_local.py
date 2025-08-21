@@ -84,27 +84,17 @@ def make_edit_by_diff_tool(project_dir: str, apply: bool):
         return f"Applied 1 edit to {path}.\nDiff:\n{diff}"
     return edit_by_diff
 
-def make_delete_path_tool(project_dir: str, apply: bool):
-    @tool("delete_path", return_direct=False)
-    def delete_path(path: str) -> str:
-        """
-        Delete a file or directory (recursive).
-        Prefer `git rm <path>` for tracked files when appropriate; this tool is for
-        untracked paths or when you explicitly want to remove from the working tree.
-        Shows what it will delete and asks confirmation unless apply=True.
-        """
+def make_delete_file_tool(project_dir: str, apply: bool):
+    @tool("delete_file", return_direct=False)
+    def delete_file(path: str) -> str:
+        """Delete a file safely (confirmation unless apply=True)."""
         p = _rooted(project_dir, path)
         if not p.exists():
             return f"{path} not found."
-        if not confirm_action(f"Delete {path}? (recursive for directories)", apply):
-            return f"Delete cancelled for {path}."
-        try:
-            if p.is_dir():
-                shutil.rmtree(p)
-                return f"Deleted directory {path}"
-            else:
-                p.unlink()
-                return f"Deleted file {path}"
-        except Exception as e:
-            return f"Error deleting {path}: {e}"
-    return delete_path
+        if not p.is_file():
+            return f"{path} is not a file."
+        if not confirm_action(f"Delete file {path}?", apply):
+            return f"Delete cancelled: {path}"
+        p.unlink()
+        return f"Deleted {path}."
+    return delete_file
