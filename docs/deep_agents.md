@@ -1,42 +1,57 @@
-# Deep Agent Workflow
+# Deep Agents: Autonomous Task Execution
 
-This document outlines the workflow logic of the deep agents codebase.
+This document provides an overview of the Deep Agents codebase, detailing its capabilities and usage.
 
 ## Overview
 
-Deep agents are designed to perform complex tasks autonomously.  They leverage a combination of tools and subagents to achieve their goals. The core workflow involves:
+Deep Agents are designed for autonomous execution of complex tasks. They utilize a combination of tools and subagents to achieve their objectives. The core workflow is as follows:
 
 1. **Task Definition:** A task is defined with a clear description and any necessary parameters.
-2. **Tool Selection:** The agent selects the appropriate tools based on the task requirements.
-3. **Subagent Launch (Optional):** If the task is complex, the agent may launch a subagent to handle a specific part of the task.
-4. **Tool Execution:** The selected tools are executed, and their outputs are collected.
-5. **Output Integration:** The agent integrates the outputs from the tools to produce a final result.
-6. **Result Delivery:** The final result is delivered to the user.
+2. **Tool Selection:** The agent intelligently selects appropriate tools based on task requirements.
+3. **Subagent Launch (Optional):** For complex tasks, the agent can launch subagents to handle specific subtasks.
+4. **Tool Execution:** Selected tools are executed, and their outputs are collected.
+5. **Output Integration:** The agent integrates tool outputs to generate a final result.
+6. **Result Delivery:** The final result is delivered.
+
+## Capabilities
+
+- **Autonomous Task Execution:** Handles complex tasks without human intervention.
+- **Tool Orchestration:** Selects and executes appropriate tools based on task needs.
+- **Subagent Management:** Launches and manages subagents for complex subtasks.
+- **Output Integration:** Combines outputs from multiple tools for a coherent result.
+
+## CLI Usage
+
+Deep Agents can be used directly from the command line.  A typical invocation might look like this:
+
+```bash
+deepagent "Write a summary of the latest advancements in AI"
+```
+
+This command would trigger the agent to execute the specified task, leveraging its internal tools and knowledge.
 
 ## Code Structure
 
-The codebase is structured as follows:
+The codebase is organized as follows:
 
-- `create_deep_agent`: Function to create a new deep agent instance.
-- `DeepAgentState`: Class representing the state of a deep agent.
-- `SubAgent`: Class representing a subagent.
-- `task`: Function to launch a subagent.
+- `create_deep_agent()`: Creates a new Deep Agent instance.
+- `DeepAgentState`: Represents the internal state of a Deep Agent.
+- `SubAgent`: Represents a subagent responsible for a specific task.
+- `task()`: Function to launch a subagent.
 
 ## Example
 
 ```python
-# Create a new deep agent
+from deepagents import create_deep_agent
+
 agent = create_deep_agent()
-
-# Define a task
-task_description = "Write a documentation for deep agents"
-
-# Execute the task
-agent.execute(task_description)
+result = agent.execute("Summarize the plot of Hamlet.")
+print(result)
 ```
 
 ## Future Improvements
 
-- Add more sophisticated tool selection logic.
-- Implement error handling and recovery mechanisms.
-- Develop more advanced subagent capabilities.
+- Enhanced tool selection logic.
+- Robust error handling and recovery.
+- Advanced subagent capabilities.
+- Improved CLI interface and options.

@@ -148,6 +148,41 @@ def _maybe_coerce_img_command(raw: str) -> str:
     except Exception:
         return raw
 
+MAX_RECOVERY_STEPS = 2
+
+def _looks_like_requesting_paths(text: str) -> bool:
+    """Detect model asking user for file paths or permission instead of acting."""
+    t = (text or "").lower()
+    needles = [
+        "provide the file path",
+        "please provide the path",
+        "i need the path",
+        "cannot access local files",
+        "share the file contents",
+        "may i proceed",
+        "ask for confirmation",
+        "do you want me to",
+    ]
+    return any(n in t for n in needles)
+
+def _self_heal_directive(user_goal: str) -> str:
+    """Strong, generic directive that forces discovery + action without questions."""
+    return (
+        "SELF-HEAL DIRECTIVE:\n"
+        "You returned an empty or non-actionable reply (or asked the user for paths). "
+        "Do NOT ask questions. Discover and act with tools immediately.\n\n"
+        "Required now (no chatter):\n"
+        "1) Discover relevant files: use list_dir, glob('**/*'), glob('docs/**/*.md'), glob('src/**/*'), "
+        "   and grep for key symbols. Read targets with read_file.\n"
+        "2) Perform the requested changes end-to-end using edit_by_diff / write_file.\n"
+        "3) Run at least one run_cmd (git status/diff/add/commit/push or tests) and capture stdout/stderr.\n"
+        "4) If deletion is requested, use delete_file (or write_file with empty content as last resort).\n"
+        "5) Attempt git add/commit and push (determine branch via run_cmd). Do not ask for credentials—attempt and report.\n"
+        "6) Produce exactly one final message starting with 'FINAL:' summarizing todos, files changed, "
+        "   important command outputs, and follow-ups.\n\n"
+        f"User goal/context: {user_goal}\n"
+        "Execute now."
+    )
 
 def _extract_last_content(messages: list) -> str:
     """Best-effort to get string content of the last message."""
@@ -276,20 +311,19 @@ def chat(
     if mode not in {"react", "deep"}:
         mode = "react"
 
-    # Build agent
+    # Build the agent
     if mode == "deep":
         seed = AUTO_DEEP_INSTR if auto else None
         agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=apply, instruction_seed=seed)
+        session_title = "LangChain Code Agent • Deep Chat"
     else:
         agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
+        session_title = "LangChain Code Agent • Chat"
 
-    _print_session_header(
-        "LangChain Code Agent • Deep Chat" if mode == "deep" else "LangChain Code Agent • Chat",
-        provider, project_dir, interactive=True, apply=apply
-    )
+    _print_session_header(session_title, provider, project_dir, interactive=True, apply=apply)
 
-    history: list = []
-    msgs: list = []
+    history: list = []  # ReAct history (LC)
+    msgs: list = []     # Deep history (LangGraph-style dicts)
 
     try:
         while True:
@@ -299,10 +333,7 @@ def chat(
 
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
-                _print_session_header(
-                    "LangChain Code Agent • Deep Chat" if mode == "deep" else "LangChain Code Agent • Chat",
-                    provider, project_dir, interactive=True, apply=apply
-                )
+                _print_session_header(session_title, provider, project_dir, interactive=True, apply=apply)
                 history.clear()
                 msgs.clear()
                 continue
@@ -312,26 +343,40 @@ def chat(
 
             coerced = _maybe_coerce_img_command(user)
 
+            # ----------------------------
+            # Deep (LangGraph) mode
+            # ----------------------------
             if mode == "deep":
                 msgs.append({"role": "user", "content": coerced})
 
+                # One-time autopilot kickoff per turn (push it to act; no questions)
+                if auto:
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "AUTOPILOT KICKOFF: Start now. Discover files (glob/list_dir/grep), read targets "
+                            "(read_file), perform edits (edit_by_diff/write_file), run at least one run_cmd "
+                            "(git/tests) with stdout/stderr and exit code, then output one 'FINAL:' report. "
+                            "Do not ask questions."
+                        )
+                    })
+
+                # Initial invoke
                 res = agent.invoke({"messages": msgs})
                 if isinstance(res, dict) and "messages" in res:
                     msgs = res["messages"]
                 else:
-                    # Absolute last resort if agent returns something unexpected
                     console.print(_panel_agent_output(_synthesize_fallback_final(msgs)))
                     continue
 
-                # Guardrail A: force tool activity
+                # Guardrail A: force tool activity if none seen yet
                 retries = 0
                 while not _has_tool_activity(msgs) and retries < 2:
                     msgs.append({
                         "role": "system",
                         "content": (
                             "Compliance check: You have not used any tools yet. "
-                            "Silently proceed to discover files (glob/grep/list_dir), read targets (read_file), "
-                            "and run at least one run_cmd. Do not finalize yet."
+                            "Silently discover repository contents and read targets. Do not finalize."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
@@ -339,27 +384,41 @@ def chat(
                         msgs = res["messages"]
                     retries += 1
 
-                # Guardrail B: must execute run_cmd at least once before FINAL
+                # Guardrail B: require at least one run_cmd before FINAL
                 if not _saw_run_cmd(msgs):
                     msgs.append({
                         "role": "system",
                         "content": (
-                            "Compliance check: Execute at least one run_cmd (e.g., git status/diff/add/commit/push "
-                            "or tests) and ground results with stdout/stderr and exit code before FINAL."
+                            "Compliance check: Execute at least one run_cmd (git status/diff/add/commit/push or tests) "
+                            "and ground results with stdout/stderr + exit code before FINAL."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
                     if isinstance(res, dict) and "messages" in res:
                         msgs = res["messages"]
 
-                # Guardrail C: enforce non-empty final output
+                # Self-heal/retry: blank output or asking for paths? re-invoke with strict directive
+                recovery = 0
                 last_text = _extract_last_content(msgs).strip()
+                while recovery < MAX_RECOVERY_STEPS and (
+                    not last_text
+                    or (auto and not last_text.startswith("FINAL:"))
+                    or _looks_like_requesting_paths(last_text)
+                ):
+                    msgs.append({"role": "system", "content": _self_heal_directive(coerced)})
+                    res = agent.invoke({"messages": msgs})
+                    if isinstance(res, dict) and "messages" in res:
+                        msgs = res["messages"]
+                    last_text = _extract_last_content(msgs).strip()
+                    recovery += 1
+
+                # Final enforcement in auto: if still not FINAL, ask once explicitly
                 if auto and not last_text.startswith("FINAL:"):
                     msgs.append({
                         "role": "system",
                         "content": (
-                            "Auto mode: Produce exactly one final message that starts with 'FINAL:' "
-                            "after using tools and at least one run_cmd. No intermediate chatter."
+                            "Auto mode: Finish execution and output a single 'FINAL:' report now "
+                            "(todos, files changed, key command outputs, follow-ups)."
                         )
                     })
                     res = agent.invoke({"messages": msgs})
@@ -367,21 +426,21 @@ def chat(
                         msgs = res["messages"]
                         last_text = _extract_last_content(msgs).strip()
 
-                # If still empty, synthesize a fallback FINAL from tool logs
+                # Never print a blank panel
                 output = _synthesize_fallback_final(msgs) if not last_text else last_text
                 console.print(_panel_agent_output(output))
 
+            # ----------------------------
+            # ReAct (LangChain) mode
+            # ----------------------------
             else:
-                # ReAct mode
                 res = agent.invoke({"input": coerced, "chat_history": history})
                 output = res.get("output", "") if isinstance(res, dict) else str(res)
 
-                # Blank-output guardrail for ReAct
+                # Blank-output guardrail for ReAct: surface recent intermediate steps
                 if not str(output).strip():
-                    # Try to mine intermediate steps if available
                     steps = res.get("intermediate_steps") if isinstance(res, dict) else None
                     if steps:
-                        # steps is [(tool, output), ...] usually; show last few
                         previews = []
                         for pair in steps[-3:]:
                             try:
@@ -398,7 +457,6 @@ def chat(
 
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
-
 
 
 @app.command(help="Implement a feature end-to-end (plan → search → edit → verify).")
