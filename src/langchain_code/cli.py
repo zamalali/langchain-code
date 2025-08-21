@@ -100,7 +100,7 @@ def session_banner(provider: Optional[str], project_dir: Path, title_text: str, 
     return Panel(
         body,
         title=title,
-        subtitle=Text("ReAct • Tools • Safe Edits", style="dim"),
+        subtitle=Text("ReAct • Deep • Tools • Safe Edits", style="dim"),
         border_style="green",
         padding=(1, 2),
         box=box.HEAVY,
