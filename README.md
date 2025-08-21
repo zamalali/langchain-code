@@ -53,7 +53,7 @@ Based on the task, the router can delegate to different agent architectures:
     -   **`code-agent`**: Makes and validates code changes using small, verifiable diffs and running tests.
     -   **`git-agent`**: Manages version control by staging files and crafting informative commit messages.
 
-This multi-agent system allows for a clear separation of concerns and more robust execution of complex plans.
+This multi-agent system allows for a clear separation of concerns and more robust execution of complex plans.  The `deepagent` command directly utilizes this Deep Agent architecture.
 
 ### Available Tools
 
