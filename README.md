@@ -102,7 +102,7 @@ The agent will automatically detect which provider to use based on the available
 
 ### 3. Usage
 
-The main entry point is the `langcode` command, which has three sub-commands: `chat`, `feature`, and `fix`.
+The main entry point is the `langcode` command, which has three sub-commands: `chat`, `feature`, and `fix`.  For complex tasks, you can also use the `deepagent` command.
 
 #### `langcode chat`
 
@@ -162,6 +162,21 @@ langcode fix --log "errors.log"
 
 # Combine a description with a log file and verify with a test
 langcode fix "Fix the crash on image upload" --log "crash.log" --test-cmd "npm test"
+```
+
+#### `deepagent`
+
+Executes a task using the Deep Agent architecture. This is suitable for complex, multi-step operations.
+
+**Usage:**
+```bash
+deepagent <REQUEST>
+```
+
+**Example:**
+```bash
+# Request a complex task
+deepagent "Implement a new user authentication system using JWT"
 ```
 
 ### Image Support in Chat
