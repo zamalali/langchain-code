@@ -9,7 +9,7 @@ Environment:
     GITHUB_TOKEN  -> Personal Access Token if 'token' arg is not passed
 
 Notes:
-- "apply" flags default to False (DRY_RUN). Set apply=True to actually write/modify.
+- "apply" flags default to False (DRY_RUN).
 - All tools raise RuntimeError on API errors with a helpful message for the agent.
 """
 

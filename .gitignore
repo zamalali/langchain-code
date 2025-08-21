@@ -28,3 +28,4 @@ node_modules/
 *.lock
 /.ipynb_checkpoints
 test.py
+langchain_code.egg-info/

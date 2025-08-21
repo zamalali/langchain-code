@@ -7,7 +7,7 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
     @tool("run_cmd", return_direct=False)
     def run_cmd(command: str) -> str:
         """
-        Run a shell command in cwd. Confirmation required unless apply=True.
+        Run a shell command in cwd. Confirmation required.
         Use '{{TEST_CMD}}' placeholder to run the provided test_cmd if configured.
         """
         cmd = command.strip()
