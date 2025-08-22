@@ -383,7 +383,6 @@ def chat(
     if mode not in {"react", "deep"}:
         mode = "react"
 
-    # Build the agent
     if mode == "deep":
         seed = AUTO_DEEP_INSTR if auto else None
         agent = build_deep_agent(provider=provider, project_dir=project_dir, instruction_seed=seed, apply=auto,)

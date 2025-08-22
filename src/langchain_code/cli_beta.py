@@ -550,6 +550,27 @@ def analyze(
     console.print(_panel_agent_output(output, title="Analysis Result"))
 
 
+
+def analyze(
+    request: str = typer.Argument(..., help='e.g. "What are the main components of this project?"'),
+    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
+):
+    """
+    Run the deep agent to analyze the codebase and generate insights.
+    """
+    provider = resolve_provider(llm)
+    agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=False)
+
+    _print_session_header("LangChain Code Agent • Analyze", provider, project_dir, interactive=False, apply=False)
+
+    console.print(_panel_user_input(request))
+    with _with_spinner():
+        res = agent.invoke({"messages": [{"role": "user", "content": request}]})
+    output = _extract_last_content(res.get("messages", [])).strip() if isinstance(res, dict) and "messages" in res else str(res)
+    console.print(_panel_agent_output(output, title="Analysis Result"))
+
+
 def main() -> None:
     """
     Entrypoint for the langcode console script.
