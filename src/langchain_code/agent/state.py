@@ -14,5 +14,4 @@ def file_reducer(l, r):
 
 class DeepAgentState(AgentState):
     todos: NotRequired[list[Todo]]
-    # Optional virtual FS (kept separate from your real FS tools)
     files: Annotated[NotRequired[dict[str, str]], file_reducer]

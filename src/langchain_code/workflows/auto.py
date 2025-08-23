@@ -106,8 +106,7 @@ After completing your work, you MUST output exactly one message starting with "F
 1. Discover the codebase structure (glob, grep, read key files)
 2. Make the requested changes (edit_by_diff or write_file)  
 3. Test/verify your changes (run_cmd)
-4. Commit your work (git add, commit, push)
-5. Output FINAL: report and STOP
+4. Output FINAL: report and STOP
 
 **Termination Condition:**
 Once you have:

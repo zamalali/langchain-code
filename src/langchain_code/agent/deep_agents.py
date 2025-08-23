@@ -13,6 +13,7 @@ from ..tools.fs_local import make_list_dir_tool, make_read_file_tool, make_write
 from ..tools.search import make_glob_tool, make_grep_tool
 from ..tools.shell import make_run_cmd_tool
 from ..tools.processor import make_process_multimodal_tool
+from ..tools.mermaid import make_mermaid_tools
 from ..mcp_loader import get_mcp_tools
 import asyncio
 
@@ -46,6 +47,7 @@ async def _load_dynamic_tools(project_dir: Path, model, apply: bool, test_cmd: O
     tools.extend(await get_mcp_tools())
     if TavilySearch:
         tools.append(TavilySearch(max_results=5, topic="general"))
+    tools.extend(make_mermaid_tools(str(project_dir)))
     return tools
 
 def create_deep_agent(
@@ -58,14 +60,18 @@ def create_deep_agent(
     test_cmd: Optional[str] = None,
     state_schema=DeepAgentState,
     checkpointer: Optional[Checkpointer] = None,
+    llm: Optional[Any] = None,
 ):
     """
     Returns a LangGraph graph (same as deepagents) with planning + subagents.
+
+    Backward compatible:
+    - If llm is provided, use it.
+    - Else fall back to get_model(provider) (original behavior).
     """
-    model = get_model(provider)
+    model = llm or get_model(provider)
     prompt = (BASE_SYSTEM + "\n" + (instructions or "") + "\n" + BASE_DEEP_SUFFIX).strip()
 
-    # Build tools (sync wrapper for async load)
     tools = asyncio.run(_load_dynamic_tools(project_dir, model, apply, test_cmd))
     task_tool = create_task_tool(tools, instructions or BASE_SYSTEM, subagents or [], model, state_schema)
     all_tools: List[Union[BaseTool, Any]] = [*tools, task_tool]
