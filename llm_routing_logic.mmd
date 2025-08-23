@@ -1,0 +1,51 @@
+
+graph LR
+    A[Start: get_model(provider, query, priority)] --> B{query is None?};
+    B -- Yes --> C{provider == "anthropic"?};
+    C -- Yes --> D[Return: Claude Sonnet (default)];
+    C -- No --> E{provider == "gemini"?};
+    E -- Yes --> F[Return: Gemini 2.0 Flash (default)];
+    E -- No --> G[Raise ValueError];
+    B -- No --> H[optimal = _router.select_optimal_model_for_provider(query, provider, priority)];
+    H --> I{provider == "anthropic"?};
+    I -- Yes --> J[Return: _cached_chat_model(anthropic, optimal.langchain_model_name)];
+    I -- No --> K{provider == "gemini"?};
+    K -- Yes --> L[Return: _cached_chat_model(gemini, optimal.langchain_model_name)];
+    K -- No --> M[Raise ValueError];
+
+    subgraph IntelligentLLMRouter
+        H --> H1[complexity = _router.classify_complexity(query)];
+        H1 --> H2{provider == "gemini"?};
+        H2 -- Yes --> H3[available = gemini_models];
+        H2 -- No --> H4{provider == "anthropic"?};
+        H4 -- Yes --> H5[available = anthropic_models];
+        H4 -- No --> H6[Raise ValueError];
+        H1 --> H7{complexity == "simple"?};
+        H7 -- Yes --> H8[candidates = [m for m in available if m.latency_tier <= 2] or available];
+        H7 -- No --> H9{complexity == "medium"?};
+        H9 -- Yes --> H10[candidates = [m for m in available if m.latency_tier <= 3] or available];
+        H9 -- No --> H11{complexity in ["complex", "overly_complex"]?};
+        H11 -- Yes --> H12[min_reason = 8 if complexity == "complex" else 9];
+        H12 --> H13[candidates = [m for m in available if m.reasoning_strength >= min_reason] or sorted(available by reasoning_strength, latency_tier)];
+        H11 -- No --> H14[candidates = available];
+        H14 --> H15{priority == "quality" and complexity not in ["complex", "overly_complex"]?};
+        H15 -- Yes --> H16[hiq = [m for m in candidates if m.reasoning_strength >= 8] or candidates];
+        H16 --> H17[hiq.sort(latency_tier, -reasoning_strength, cost)];
+        H17 --> H18[Return hiq[0]];
+        H15 -- No --> H19{priority == "cost" and complexity not in ["complex", "overly_complex"]?};
+        H19 -- Yes --> H20[cheap = sorted(candidates, latency_tier, cost, -reasoning_strength)];
+        H20 --> H21[Return cheap[0]];
+        H19 -- No --> H22[fast = sorted(candidates, latency_tier, cost, -reasoning_strength)];
+        H22 --> H23[Return fast[0]];
+    end
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style D fill:#ccf,stroke:#333,stroke-width:2px
+    style F fill:#ccf,stroke:#333,stroke-width:2px
+    style G fill:#fcc,stroke:#333,stroke-width:2px
+    style J fill:#ccf,stroke:#333,stroke-width:2px
+    style L fill:#ccf,stroke:#333,stroke-width:2px
+    style M fill:#fcc,stroke:#333,stroke-width:2px
+    style H18 fill:#ccf,stroke:#333,stroke-width:2px
+    style H21 fill:#ccf,stroke:#333,stroke-width:2px
+    style H23 fill:#ccf,stroke:#333,stroke-width:2px

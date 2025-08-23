@@ -106,12 +106,14 @@ After completing your work, you MUST output exactly one message starting with "F
 1. Discover the codebase structure (glob, grep, read key files)
 2. Make the requested changes (edit_by_diff or write_file)  
 3. Test/verify your changes (run_cmd)
-4. Output FINAL: report and STOP
+4. For visual content (diagrams, charts, images), generate only the rendered outputs when requested
+5. Output FINAL: report and STOP
 
 **Termination Condition:**
 Once you have:
 - Used at least one discovery tool (glob/grep/read_file)
 - Made the requested changes 
+- Generated all requested outputs (including rendered visuals like PNG from mermaid diagrams)
 - Run at least one shell command
 - Committed your work (or attempted to)
 
@@ -130,5 +132,6 @@ FINAL:
 - No intermediate status updates
 - Use tools for all facts
 - Don't ask questions - act autonomously
+- Complete ALL requested deliverables before terminating
 - STOP after outputting FINAL: - do not continue
 """
