@@ -37,6 +37,114 @@ The CLI provides a set of commands for interacting with LangCode agents and work
 
 ### Commands
 
+## Available commands
+
+*   **chat**: Opens an interactive chat session with the agent.
+    *   `--llm`: (Optional) Specifies the language model to use.  Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+    *   `--mode`: (Optional) Specifies the chat mode.  Available modes are `react` and `deep`. Defaults to `react`.
+    *   `--auto`: (Optional) Enables autonomy mode.  This is only applicable in `deep` mode.
+    *   `--apply`: (Optional) Enables apply mode, which allows the agent to automatically apply changes and run commands without requiring interactive confirmation. Use with caution.
+
+*   **feature**: Implements a feature end-to-end (plan → search → edit → verify).
+    *   `request`: (Required) A description of the feature to implement (e.g., "Add a dark mode toggle in settings"). This should be a clear and concise description of the desired feature.
+    *   `--llm`: (Optional) Specifies the language model to use. Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+    *   `--test-cmd`: (Optional) Specifies a test command to run (e.g., "pytest -q" or "npm test"). This command is used to verify the implementation of the feature. If the command fails, the agent will attempt to fix the issue.
+    *   `--apply`: (Optional) Enables apply mode, which allows the agent to automatically apply changes and run commands without requiring interactive confirmation. Use with caution.
+
+*   **fix**: Diagnoses & fixes a bug (trace → pinpoint → patch → test).
+    *   `request`: (Optional) A description of the bug to fix (e.g., "Fix crash on image upload"). This should be a clear and concise description of the bug.
+    *   `--log`: (Optional) Path to an error log or stack trace. This can be helpful for the agent to diagnose the bug.
+    *   `--llm`: (Optional) Specifies the language model to use. Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+    *   `--test-cmd`: (Optional) Specifies a test command to run (e.g., "pytest -q"). This command is used to verify that the bug has been fixed. If the command fails, the agent will attempt to fix the issue.
+    *   `--apply`: (Optional) Enables apply mode, which allows the agent to automatically apply changes and run commands without requiring interactive confirmation. Use with caution.
+
+*   **analyze**: Analyzes any codebase and generates insights.
+    *   `request`: (Required) A description of the analysis to perform (e.g., "What are the main components of this project?"). This should be a clear and concise description of the analysis to perform.
+    *   `--llm`: (Optional) Specifies the language model to use. Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+
+
+
+
+
+- **chat**: Opens an interactive chat session with the agent.
+    *   `--llm`: (Optional) Specifies the language model to use.  Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+    *   `--mode`: (Optional) Specifies the chat mode.  Available modes are `react` and `deep`. Defaults to `react`.
+    *   `--auto`: (Optional) Enables autonomy mode.  This is only applicable in `deep` mode.
+    *   `--apply`: (Optional) Enables apply mode, which allows the agent to automatically apply changes and run commands without requiring interactive confirmation. Use with caution.
+
+- **feature**: Implements a feature end-to-end (plan → search → edit → verify).
+    *   `request`: (Required) A description of the feature to implement (e.g., "Add a dark mode toggle in settings"). This should be a clear and concise description of the desired feature.
+    *   `--llm`: (Optional) Specifies the language model to use. Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+    *   `--test-cmd`: (Optional) Specifies a test command to run (e.g., "pytest -q" or "npm test"). This command is used to verify the implementation of the feature. If the command fails, the agent will attempt to fix the issue.
+    *   `--apply`: (Optional) Enables apply mode, which allows the agent to automatically apply changes and run commands without requiring interactive confirmation. Use with caution.
+
+- **fix**: Diagnoses & fixes a bug (trace → pinpoint → patch → test).
+    *   `request`: (Optional) A description of the bug to fix (e.g., "Fix crash on image upload"). This should be a clear and concise description of the bug.
+    *   `--log`: (Optional) Path to an error log or stack trace. This can be helpful for the agent to diagnose the bug.
+    *   `--llm`: (Optional) Specifies the language model to use. Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+    *   `--test-cmd`: (Optional) Specifies a test command to run (e.g., "pytest -q"). This command is used to verify that the bug has been fixed. If the command fails, the agent will attempt to fix the issue.
+    *   `--apply`: (Optional) Enables apply mode, which allows the agent to automatically apply changes and run commands without requiring interactive confirmation. Use with caution.
+
+- **analyze**: Analyzes any codebase and generates insights.
+    *   `request`: (Required) A description of the analysis to perform (e.g., "What are the main components of this project?"). This should be a clear and concise description of the analysis to perform.
+    *   `--llm`: (Optional) Specifies the language model to use. Supported models include `anthropic` and `gemini`. If not specified, defaults to `gemini`.
+    *   `--project-dir`: (Optional) Specifies the project directory. Defaults to the current working directory if not provided.
+
+
+
+The LangCode CLI provides the following commands:
+
+- **`chat`**: Opens an interactive chat session with the agent. This command opens an interactive chat session with the agent, allowing you to communicate in real-time by asking questions or providing instructions. The agent responds to your messages, providing information or taking actions based on your input. It supports image processing via `/img` commands, enabling you to incorporate visual information into the conversation.
+Example:
+```bash
+langcode chat --llm gemini --project-dir myproject
+```
+This starts a chat session using the Gemini language model and working within the `myproject` directory.
+
+- **`feature`**: Implements a new feature from a given request. This command automates the process of implementing a new feature in a codebase. You provide a description of the feature request, and the agent will automatically plan, search, edit, and verify the changes required to implement the feature. The agent leverages the ReAct framework to reason about the required steps and take actions accordingly.
+Example:
+```bash
+langcode feature "Add a new user authentication system" --apply --test-cmd "pytest"
+```
+This requests the implementation of a new user authentication system, applies the changes automatically, and runs pytest to verify the changes.
+
+- **`fix`**: Fixes a bug based on a request and an optional error log. This command assists in diagnosing and fixing bugs within a codebase. You provide a description of the bug and an optional error log, and the agent will trace the error, pinpoint the cause, patch the code, and test the changes to ensure the bug is resolved. The agent leverages the ReAct framework to reason about the bug and take appropriate actions.
+Example:
+```bash
+langcode fix "Resolve the issue with database connection" --project-dir myproject
+```
+This requests a fix for a database connection issue within the `myproject` directory.
+
+
+
+- **`chat`**: Opens an interactive chat session with the agent.  Supports image processing via `/img` commands.
+Example:
+```bash
+langcode chat --llm gemini --project-dir myproject
+```
+This starts a chat session using the Gemini language model and working within the `myproject` directory.
+
+- **`feature`**: Implements a new feature from a given request.
+Example:
+```bash
+langcode feature "Add a new user authentication system" --apply --test-cmd "pytest"
+```
+This requests the implementation of a new user authentication system, applies the changes automatically, and runs pytest to verify the changes.
+
+- **`fix`**: Fixes a bug based on a request and an optional error log.
+Example:
+```bash
+langcode fix "Resolve the issue with database connection" --project-dir myproject
+```
+This requests a fix for a database connection issue within the `myproject` directory.
+
 The LangCode CLI provides the following commands:
 
 - **`chat`**: Opens an interactive chat session with the agent. This command opens an interactive chat session with the agent, allowing you to communicate in real-time by asking questions or providing instructions. The agent responds to your messages, providing information or taking actions based on your input. It supports image processing via `/img` commands, enabling you to incorporate visual information into the conversation.
