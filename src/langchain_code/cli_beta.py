@@ -1,11 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, List
-import sys
-import os
-import time
-import threading
-from contextlib import contextmanager
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -15,8 +10,8 @@ from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
 from rich import box
-from rich.live import Live
 from pyfiglet import Figlet
+from rich.progress import Progress, SpinnerColumn, TextColumn 
 
 from .config import resolve_provider
 from .agent.react import build_react_agent, build_deep_agent
@@ -27,19 +22,48 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.messages import ToolMessage
 
 
-app = typer.Typer(add_completion=False, help="LangCode – ReAct + tools code agent CLI.")
+APP_HELP = """
+LangCode – ReAct + Tools + Deep (LangGraph) code agent CLI.
+
+Use it to chat with an agent, implement features, fix bugs, or analyze a codebase.
+
+Key flags (for `chat`):
+  • --mode [react|deep]   Choose the reasoning engine (default: react).
+      - react  : Classic ReAct agent with tools.
+      - deep   : LangGraph-style multi-step agent.
+  • --auto                 Autopilot (deep mode only): plan + act with no questions.
+
+Examples:
+  • langcode chat --llm anthropic --mode react
+  • langcode chat --llm gemini --mode deep --auto
+  • langcode feature "Add a dark mode toggle" --llm anthropic --apply
+  • langcode fix --log error.log --test-cmd "pytest -q"
+"""
+
+app = typer.Typer(add_completion=False, help=APP_HELP.strip())
 console = Console()
 PROMPT = "[bold green]langcode[/bold green] [dim]›[/dim] "
 
 
-def print_langcode_ascii(console: Console, text: str = "LangCode", font: str = "ansi_shadow", gradient: str = "dark_to_light") -> None:
+def print_langcode_ascii(
+    console: Console,
+    text: str = "LangCode",
+    font: str = "ansi_shadow",
+    gradient: str = "dark_to_light",
+) -> None:
     """
     Render a single-shot ASCII banner with a left-to-right green gradient.
     """
-    def _hex_to_rgb(h): h = h.lstrip("#"); return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
-    def _lerp(a, b, t): return int(a + (b - a) * t)
+    def _hex_to_rgb(h):
+        h = h.lstrip("#")
+        return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+    def _lerp(a, b, t):
+        return int(a + (b - a) * t)
+
     def _interpolate_palette(palette, width):
-        if width <= 1: return [palette[0]]
+        if width <= 1:
+            return [palette[0]]
         out, steps_total = [], width - 1
         for x in range(width):
             pos = x / steps_total
@@ -69,7 +93,16 @@ def print_langcode_ascii(console: Console, text: str = "LangCode", font: str = "
     _print_block_with_horizontal_gradient(lines, palette)
 
 
-def session_banner(provider: Optional[str], project_dir: Path, title_text: str, interactive: bool = False, apply: bool = False, test_cmd: Optional[str] = None, tips: Optional[List[str]] = None) -> Panel:
+def session_banner(
+    provider: Optional[str],
+    project_dir: Path,
+    title_text: str,
+    *,
+    interactive: bool = False,
+    apply: bool = False,
+    test_cmd: Optional[str] = None,
+    tips: Optional[list[str]] = None,
+) -> Panel:
     """
     Build a framed status panel showing provider, project, and optional session tips.
     """
@@ -97,7 +130,7 @@ def session_banner(provider: Optional[str], project_dir: Path, title_text: str, 
 
     if interactive:
         body.append("\n\n")
-        body.append("Type your request. /clear to redraw, /exit to quit. Ctrl+C also exits.\n", style="dim")
+        body.append("Type your request. /clear to redraw, /exit or /quit to quit. Ctrl+C also exits.\n", style="dim")
 
     if tips:
         body.append("\n")
@@ -114,13 +147,32 @@ def session_banner(provider: Optional[str], project_dir: Path, title_text: str, 
     )
 
 
-def _print_session_header(title: str, provider: Optional[str], project_dir: Path, *, interactive: bool = False, apply: bool = False, test_cmd: Optional[str] = None, tips: Optional[List[str]] = None) -> None:
+def _print_session_header(
+    title: str,
+    provider: Optional[str],
+    project_dir: Path,
+    *,
+    interactive: bool = False,
+    apply: bool = False,
+    test_cmd: Optional[str] = None,
+    tips: Optional[list[str]] = None,
+) -> None:
     """
     Clear the screen and draw the LangCode header, banner, and a separator rule.
     """
     console.clear()
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
-    console.print(session_banner(provider, project_dir, title, interactive=interactive, apply=apply, test_cmd=test_cmd, tips=tips))
+    console.print(
+        session_banner(
+            provider,
+            project_dir,
+            title,
+            interactive=interactive,
+            apply=apply,
+            test_cmd=test_cmd,
+            tips=tips,
+        )
+    )
     console.print(Rule(style="green"))
 
 
@@ -132,156 +184,19 @@ def _panel_agent_output(text: str, title: str = "Agent") -> Panel:
     return Panel.fit(body, title=title, border_style="cyan", box=box.ROUNDED, padding=(0, 1))
 
 
-def _panel_user_input(text: str) -> Panel:
-    """Pretty green panel to echo submitted user input in the transcript."""
-    content = Markdown(text) if ("```" in text or "\n#" in text) else Text(text, style="bold")
-    return Panel(
-        content,
-        title=Text("You", style="bold green"),
-        border_style="green",
-        padding=(1, 2),
-        box=box.HEAVY,
+def _show_loader() -> Progress:
+    """
+    Display a spinner while processing; auto-hides when done.
+    """
+    progress = Progress(
+        SpinnerColumn(spinner_name="dots", style=Style(color="green")),
+        TextColumn("[progress.description]{task.description}", style=Style(color="white")),
+        transient=True,
     )
+    progress.add_task("[bold]Processing...", total=None)
+    return progress
 
 
-# =============== LIVE TYPING INPUT BOX (inside a green boundary) ===============
-def _render_typing_panel(buffer: str) -> Panel:
-    """Render the live typing panel with current buffer."""
-    caret = "▏"  # slim caret
-    text = Text.from_markup("")
-    text.append_text(Text.from_markup(PROMPT))
-    text.append(buffer)
-    text.append(caret, style="bold green")
-    return Panel(
-        text,
-        title=Text("Type your request", style="bold green"),
-        border_style="green",
-        padding=(1, 2),
-        box=box.HEAVY,
-    )
-
-
-def _readline_in_panel() -> str:
-    """
-    Read a line from stdin while rendering a green panel around the input.
-    Falls back to Console.input when a TTY isn't available.
-    Supports basic editing: backspace, Ctrl+C, Enter. Ignores arrow keys.
-    """
-    if not sys.stdin.isatty():
-        # Fallback (no live boundary possible)
-        return console.input(PROMPT).strip()
-
-    # Cross-platform char reading
-    on_windows = os.name == "nt"
-    if on_windows:
-        try:
-            import msvcrt  # type: ignore
-        except Exception:
-            return console.input(PROMPT).strip()
-
-        buf: List[str] = []
-        with Live(_render_typing_panel(""), refresh_per_second=30, console=console) as live:
-            while True:
-                ch = msvcrt.getwch()
-                if ch in ("\r", "\n"):
-                    console.print() 
-                    return "".join(buf).strip()
-                if ch == "\003":  # Ctrl+C
-                    raise KeyboardInterrupt()
-                if ch in ("\b", "\x7f"):
-                    if buf:
-                        buf.pop()
-                elif ch == "\xe0" or ch == "\x00":
-                    _ = msvcrt.getwch()  
-                else:
-                    buf.append(ch)
-                live.update(_render_typing_panel("".join(buf)))  
-
-    else:
-        import termios, tty
-
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        buf: List[str] = []
-        try:
-            tty.setraw(fd)
-            with Live(_render_typing_panel(""), refresh_per_second=30, console=console):
-                while True:
-                    ch = sys.stdin.read(1)
-                    if ch in ("\r", "\n"):
-                        console.print()
-                        return "".join(buf).strip()
-                    if ch == "\x03":  # Ctrl+C
-                        raise KeyboardInterrupt()
-                    if ch in ("\x7f", "\b"):  # Backspace
-                        if buf:
-                            buf.pop()
-                    elif ch == "\x1b":
-                        # ESC sequence (arrows etc.) – read the next two chars if present, ignore.
-                        _ = sys.stdin.read(1)
-                        _ = sys.stdin.read(1)
-                    else:
-                        # Filter non-printable controls
-                        if ord(ch) >= 32:
-                            buf.append(ch)
-                    console.update(_render_typing_panel("".join(buf)))
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-
-# =================== MINIMAL LEFT-ALIGNED DOT SPINNER (no box) =================
-class _DotSpinner:
-    """
-    Left-aligned circular spinner: a ring of dots with a black filled dot (●) rotating
-    among white hollow dots (○). No panel/box—just the spinner line itself.
-    """
-    def __init__(self, n: int = 8, speed: float = 0.08):
-        self.n = max(4, n)
-        self.speed = max(0.03, float(speed))
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-
-    def _frame(self, i: int) -> Text:
-        idx = i % self.n
-        chars = []
-        for k in range(self.n):
-            chars.append("●" if k == idx else "○")
-        line = " ".join(chars)
-        # pure left-aligned line, dim to keep it subtle
-        return Text(line, style="bold")
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def _run(self) -> None:
-        i = 0
-        with Live(self._frame(i), refresh_per_second=30, console=console) as live:
-            while not self._stop.is_set():
-                i += 1
-                live.update(self._frame(i)) 
-                time.sleep(self.speed)
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-
-
-@contextmanager
-def _with_spinner():
-    sp = _DotSpinner()
-    try:
-        sp.start()
-        yield
-    finally:
-        sp.stop()
-
-
-# =============================== UTILITIES =====================================
 def _maybe_coerce_img_command(raw: str) -> str:
     """
     Convert '/img <p1> <p2> :: <prompt>' to a clear tool instruction for process_multimodal.
@@ -305,6 +220,45 @@ def _maybe_coerce_img_command(raw: str) -> str:
         return raw
 
 
+MAX_RECOVERY_STEPS = 2  # (currently unused but kept for future guardrail logic)
+
+
+def _looks_like_requesting_paths(text: str) -> bool:
+    """Detect model asking user for file paths or permission instead of acting."""
+    t = (text or "").lower()
+    needles = [
+        "provide the file path",
+        "please provide the path",
+        "i need the path",
+        "cannot access local files",
+        "share the file contents",
+        "may i proceed",
+        "ask for confirmation",
+        "do you want me to",
+    ]
+    return any(n in t for n in needles)
+
+
+def _self_heal_directive(user_goal: str) -> str:
+    """Strong, generic directive that forces discovery + action without questions."""
+    return (
+        "SELF-HEAL DIRECTIVE:\n"
+        "You returned an empty or non-actionable reply (or asked the user for paths). "
+        "Do NOT ask questions. Discover and act with tools immediately.\n\n"
+        "Required now (no chatter):\n"
+        "1) Discover relevant files: use list_dir, glob('**/*'), glob('docs/**/*.md'), glob('src/**/*'), "
+        "   and grep for key symbols. Read targets with read_file.\n"
+        "2) Perform the requested changes end-to-end using edit_by_diff / write_file.\n"
+        "3) Run at least one run_cmd (git status/diff/add/commit/push or tests) and capture stdout/stderr.\n"
+        "4) If deletion is requested, use delete_file (or write_file with empty content as last resort).\n"
+        "5) Attempt git add/commit and push (determine branch via run_cmd). Do not ask for credentials—attempt and report.\n"
+        "6) Produce exactly one final message starting with 'FINAL:' summarizing todos, files changed, "
+        "   important command outputs, and follow-ups.\n\n"
+        f"User goal/context: {user_goal}\n"
+        "Execute now."
+    )
+
+
 def _extract_last_content(messages: list) -> str:
     """Best-effort to get string content of the last message."""
     if not messages:
@@ -312,12 +266,15 @@ def _extract_last_content(messages: list) -> str:
     last = messages[-1]
     c = getattr(last, "content", None)
 
+    # If regular string, return it
     if isinstance(c, str):
         return c.strip()
 
     if isinstance(c, list):
         parts = []
         for p in c:
+            # Common LC/Graph part formats:
+            # {'type': 'text', 'text': '...'}   or   {'text': '...'}
             if isinstance(p, dict):
                 if 'text' in p and isinstance(p['text'], str):
                     parts.append(p['text'])
@@ -327,6 +284,7 @@ def _extract_last_content(messages: list) -> str:
                 parts.append(p)
         return "\n".join(parts).strip()
 
+    # Dict message
     if isinstance(last, dict):
         c = last.get("content", "")
         if isinstance(c, str):
@@ -334,7 +292,33 @@ def _extract_last_content(messages: list) -> str:
         if isinstance(c, list):
             return "\n".join(str(x) for x in c if isinstance(x, str)).strip()
 
+    # Fallback
     return (str(c) if c is not None else str(last)).strip()
+
+
+def _has_tool_activity(messages: list) -> bool:
+    """Detect any tool IO in the transcript."""
+    for m in messages or []:
+        if isinstance(m, ToolMessage):
+            return True
+        if getattr(m, "type", "") == "tool":
+            return True
+        if isinstance(m, dict) and m.get("type") == "tool":
+            return True
+    return False
+
+
+def _saw_run_cmd(messages: list) -> bool:
+    """Heuristic for your run_cmd tool (prints '$ <cmd>' and '(exit N)')."""
+    for m in messages or []:
+        c = getattr(m, "content", None)
+        if isinstance(c, str) and ("\n(exit " in c or c.startswith("$ ")):
+            return True
+        if isinstance(m, dict):
+            c = m.get("content")
+            if isinstance(c, str) and ("\n(exit " in c or c.startswith("$ ")):
+                return True
+    return False
 
 
 def _collect_recent_tool_summaries(messages: list, max_items: int = 3, max_chars_each: int = 400) -> list[str]:
@@ -369,7 +353,6 @@ def _synthesize_fallback_final(messages: list) -> str:
     )
 
 
-# ================================ ROOT =========================================
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
     """
@@ -383,24 +366,51 @@ def _root(ctx: typer.Context):
             provider_hint,
             project_dir,
             interactive=False,
+            apply=False,
+            test_cmd=None,
             tips=[
                 "Quick start:",
-                "• chat         Open an interactive session with the agent. (supports --apply)",
-                "• feature      Plan → search → edit → verify. (supports --apply)",
-                "• fix          Diagnose & patch a bug (use --log PATH). (supports --apply)",
-                "Tip: run any command with --help for details.",
+                "• chat         Open an interactive session (use --mode react|deep; add --auto with deep).",
+                "• feature      Plan → search → edit → verify. (supports --apply and --test-cmd)",
+                "• fix          Diagnose & patch a bug (use --log PATH, --test-cmd). (supports --apply)",
+                "• analyze      Deep agent insights over the codebase.",
+                "Examples:",
+                "  - langcode chat --llm anthropic --mode react",
+                "  - langcode chat --llm gemini --mode deep --auto",
+                "Exit anytime with /exit, /quit, or Ctrl+C. Use /clear to redraw.",
             ],
         )
         typer.echo(ctx.get_help())
         raise typer.Exit()
 
 
-# ================================ COMMANDS =====================================
-@app.command(help="Open an interactive chat with the agent.")
+def _mentions_write_todos_validation(messages: list) -> bool:
+    """
+    Detect common pydantic/validation complaints around write_todos / state.files.
+    """
+    needles = (
+        "validation error for write_todos",
+        "state.files",
+        "Field required",
+        "errors.pydantic.dev",
+    )
+    for m in messages or []:
+        c = getattr(m, "content", None)
+        if isinstance(c, str):
+            lc = c.lower()
+            if any(n in lc for n in needles):
+                return True
+        elif isinstance(m, dict):
+            c = m.get("content")
+            if isinstance(c, str) and any(n in c.lower() for n in needles):
+                return True
+    return False
+
+
+@app.command(help="Open an interactive chat with the agent. Modes: react | deep (default: react). Use --auto in deep mode for full autopilot (plan+act with no questions).")
 def chat(
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
-    apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
     mode: str = typer.Option("react", "--mode", help="react | deep"),
     auto: bool = typer.Option(False, "--auto", help="Autonomy mode: plan+act with no questions (deep mode only)."),
 ):
@@ -411,74 +421,122 @@ def chat(
 
     if mode == "deep":
         seed = AUTO_DEEP_INSTR if auto else None
-        agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=apply, instruction_seed=seed)
+        agent = build_deep_agent(provider=provider, project_dir=project_dir, instruction_seed=seed, apply=auto,)
         session_title = "LangChain Code Agent • Deep Chat"
+        if auto:
+            session_title += " (Auto)"
     else:
-        agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply)
+        agent = build_react_agent(provider=provider, project_dir=project_dir)
         session_title = "LangChain Code Agent • Chat"
 
-    _print_session_header(session_title, provider, project_dir, interactive=True, apply=apply)
+    _print_session_header(session_title, provider, project_dir, interactive=True)
 
-    history: list = []  # for ReAct
-    msgs: list = []     # for Deep
+    history: list = []   # for ReAct
+    msgs: list = []      # for Deep (LangGraph-style dict messages)
 
     try:
         while True:
-            # ---- LIVE INPUT INSIDE GREEN BOUNDARY ----
-            user = _readline_in_panel()
+            user = console.input(PROMPT).strip()
             if not user:
                 continue
 
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
-                _print_session_header(session_title, provider, project_dir, interactive=True, apply=apply)
+                _print_session_header(session_title, provider, project_dir, interactive=True)
                 history.clear()
                 msgs.clear()
                 continue
-            if low in {"exit", "quit", ":q", "/exit"}:
+            if low in {"exit", "quit", ":q", "/exit", "/quit"}:
                 console.print("\n[bold]Goodbye![/bold]")
                 break
 
             coerced = _maybe_coerce_img_command(user)
 
-            # Keep a static transcript panel of what was submitted
-            console.print(_panel_user_input(user))
-
-            # ---- INFERENCE WITH LEFT-ALIGNED DOT SPINNER (NO BOX) ----
+            # ----------------------------
+            # Deep (LangGraph) mode
+            # ----------------------------
             if mode == "deep":
-                msgs.append({"role": "user", "content": coerced})
-                with _with_spinner():
-                    # Simple retry logic - only one retry if empty response
-                    for attempt in range(2):
-                        res = agent.invoke({"messages": msgs})
+                with _show_loader():
+                    msgs.append({"role": "user", "content": coerced})
+
+                    if auto:
+                        msgs.append({
+                            "role": "system",
+                            "content": (
+                                "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
+                                "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
+                                "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
+                            )
+                        })
+
+                    config = {"configurable": {"recursion_limit": 50}}
+                    try:
+                        res = agent.invoke({"messages": msgs}, config=config)
                         if isinstance(res, dict) and "messages" in res:
                             msgs = res["messages"]
+                        else:
+                            console.print(_panel_agent_output("Error: Invalid response format from agent"))
+                            continue
+                    except Exception as e:
+                        if "recursion" in str(e).lower():
+                            console.print(_panel_agent_output(f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"))
+                        else:
+                            console.print(_panel_agent_output(f"Agent error: {e}"))
+                        continue
+
+                    # Simple retry for empty responses (max 1 retry)
+                    last_content = _extract_last_content(msgs).strip()
+                    if not last_content:
+                        msgs.append({
+                            "role": "system",
+                            "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
+                        })
+                        try:
+                            res = agent.invoke({"messages": msgs}, config=config)
+                            if isinstance(res, dict) and "messages" in res:
+                                msgs = res["messages"]
                             last_content = _extract_last_content(msgs).strip()
-                            if last_content:
-                                break
-                            elif attempt == 0:
-                                msgs.append({
-                                    "role": "system",
-                                    "content": "You MUST use your tools to complete the request. Do NOT ask questions - act directly. Provide a FINAL answer."
-                                })
-                output = _extract_last_content(msgs).strip() or "No response generated."
+                        except Exception as e:
+                            last_content = f"Agent failed after retry: {e}"
+
+                output = last_content or "No response generated."
                 console.print(_panel_agent_output(output))
 
+            # ----------------------------
+            # ReAct (LangChain) mode
+            # ----------------------------
             else:
-                with _with_spinner():
-                    res = agent.invoke({"input": coerced, "chat_history": history})
-                output = res.get("output", "") if isinstance(res, dict) else str(res)
-                if not output.strip():
-                    output = "No response generated. Try rephrasing your request."
-                console.print(_panel_agent_output(output))
-                history.append(HumanMessage(content=coerced))
-                history.append(AIMessage(content=output))
+                with _show_loader():
+                    try:
+                        res = agent.invoke({"input": coerced, "chat_history": history})
+                        output = res.get("output", "") if isinstance(res, dict) else str(res)
+
+                        # Blank-output guardrail
+                        if not output.strip():
+                            steps = res.get("intermediate_steps") if isinstance(res, dict) else None
+                            if steps:
+                                previews = []
+                                for pair in steps[-3:]:
+                                    try:
+                                        previews.append(str(pair))
+                                    except Exception:
+                                        continue
+                                output = "Model returned empty output. Recent steps:\n" + "\n".join(previews)
+                            else:
+                                output = "No response generated. Try rephrasing your request."
+
+                        console.print(_panel_agent_output(output))
+                        history.append(HumanMessage(content=coerced))
+                        history.append(AIMessage(content=output))
+
+                    except Exception as e:
+                        console.print(_panel_agent_output(f"ReAct agent error: {e}"))
 
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
 
 
-@app.command(help="Implement a feature end-to-end (plan → search → edit → verify).")
+@app.command(help="Implement a feature end-to-end (plan → search → edit → verify). Supports --apply and optional --test-cmd (e.g., 'pytest -q').")
 def feature(
     request: str = typer.Argument(..., help='e.g. "Add a dark mode toggle in settings"'),
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
@@ -490,18 +548,29 @@ def feature(
     Run the feature workflow once and render the result within the session frame.
     """
     provider = resolve_provider(llm)
-    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=FEATURE_INSTR)
+    agent = build_react_agent(
+        provider=provider,
+        project_dir=project_dir,
+        apply=apply,
+        test_cmd=test_cmd,
+        instruction_seed=FEATURE_INSTR,
+    )
 
-    _print_session_header("LangChain Code Agent • Feature", provider, project_dir, interactive=False, apply=apply, test_cmd=test_cmd)
-
-    console.print(_panel_user_input(request))
-    with _with_spinner():
+    _print_session_header(
+        "LangChain Code Agent • Feature",
+        provider,
+        project_dir,
+        interactive=False,
+        apply=apply,
+        test_cmd=test_cmd,
+    )
+    with _show_loader():
         res = agent.invoke({"input": request})
-    output = res.get("output", "") if isinstance(res, dict) else str(res)
+        output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Feature Result"))
 
 
-@app.command(help="Diagnose & fix a bug (trace → pinpoint → patch → test).")
+@app.command(help="Diagnose & fix a bug (trace → pinpoint → patch → test). Accepts --log, --test-cmd, and supports --apply.")
 def fix(
     request: Optional[str] = typer.Argument(None, help='e.g. "Fix crash on image upload"'),
     log: Optional[Path] = typer.Option(None, "--log", exists=True, help="Path to error log or stack trace."),
@@ -514,22 +583,33 @@ def fix(
     Run the bug-fix workflow once, with optional log input, and render the result within the session frame.
     """
     provider = resolve_provider(llm)
-    agent = build_react_agent(provider=provider, project_dir=project_dir, apply=apply, test_cmd=test_cmd, instruction_seed=BUGFIX_INSTR)
+    agent = build_react_agent(
+        provider=provider,
+        project_dir=project_dir,
+        apply=apply,
+        test_cmd=test_cmd,
+        instruction_seed=BUGFIX_INSTR,
+    )
 
     bug_input = request or ""
     if log:
         bug_input += "\n\n--- ERROR LOG ---\n" + Path(log).read_text(encoding="utf-8")
 
-    _print_session_header("LangChain Code Agent • Fix", provider, project_dir, interactive=False, apply=apply, test_cmd=test_cmd)
-
-    console.print(_panel_user_input(bug_input.strip() or "Fix the bug using the provided log."))
-    with _with_spinner():
+    _print_session_header(
+        "LangChain Code Agent • Fix",
+        provider,
+        project_dir,
+        interactive=False,
+        apply=apply,
+        test_cmd=test_cmd,
+    )
+    with _show_loader():
         res = agent.invoke({"input": bug_input.strip() or "Fix the bug using the provided log."})
-    output = res.get("output", "") if isinstance(res, dict) else str(res)
+        output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Fix Result"))
 
 
-@app.command(help="Analyze any codebase and generate insights.")
+@app.command(help="Analyze any codebase and generate insights (deep agent).")
 def analyze(
     request: str = typer.Argument(..., help='e.g. "What are the main components of this project?"'),
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
@@ -541,33 +621,20 @@ def analyze(
     provider = resolve_provider(llm)
     agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=False)
 
-    _print_session_header("LangChain Code Agent • Analyze", provider, project_dir, interactive=False, apply=False)
-
-    console.print(_panel_user_input(request))
-    with _with_spinner():
+    _print_session_header(
+        "LangChain Code Agent • Analyze",
+        provider,
+        project_dir,
+        interactive=False,
+        apply=False,
+    )
+    with _show_loader():
         res = agent.invoke({"messages": [{"role": "user", "content": request}]})
-    output = _extract_last_content(res.get("messages", [])).strip() if isinstance(res, dict) and "messages" in res else str(res)
-    console.print(_panel_agent_output(output, title="Analysis Result"))
-
-
-
-def analyze(
-    request: str = typer.Argument(..., help='e.g. "What are the main components of this project?"'),
-    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
-    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
-):
-    """
-    Run the deep agent to analyze the codebase and generate insights.
-    """
-    provider = resolve_provider(llm)
-    agent = build_deep_agent(provider=provider, project_dir=project_dir, apply=False)
-
-    _print_session_header("LangChain Code Agent • Analyze", provider, project_dir, interactive=False, apply=False)
-
-    console.print(_panel_user_input(request))
-    with _with_spinner():
-        res = agent.invoke({"messages": [{"role": "user", "content": request}]})
-    output = _extract_last_content(res.get("messages", [])).strip() if isinstance(res, dict) and "messages" in res else str(res)
+        output = (
+            _extract_last_content(res.get("messages", [])).strip()
+            if isinstance(res, dict) and "messages" in res
+            else str(res)
+        )
     console.print(_panel_agent_output(output, title="Analysis Result"))
 
 
