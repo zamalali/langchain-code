@@ -1,0 +1,27 @@
+```mermaid
+graph LR
+    A[HybridIntelligentRouter.route_request] --> B{Task Analysis};
+    B --> C[TaskAnalyzer.analyze_task];
+    C --> D{User Preference?};
+    D -- Yes --> E[Filter LLMs by Provider];
+    D -- No --> F[Available LLMs];
+    E --> F;
+    F --> G{Rule-Based Routing};
+    G --> H[RuleBasedRouter.route_request];
+    H --> I[Calculate LLM Scores];
+    I --> J[Select Best LLM (Rule-Based)];
+    F --> K{Bandit Routing Possible?};
+    K -- Yes --> L[ContextualBandit.select_arm];
+    K -- No --> M[Use Rule-Based LLM];
+    L --> N{Bandit Confidence > Threshold?};
+    N -- Yes --> O[Bandit LLM Better?];
+    N -- No --> M;
+    O -- Yes --> P[Use Bandit LLM];
+    O -- No --> M;
+    M --> Q[RoutingDecision (Rule-Based)];
+    P --> R[RoutingDecision (Bandit)];
+    J --> Q;
+    R --> S[Log Routing Decision];
+    Q --> S[Log Routing Decision];
+    S --> T[Return RoutingDecision];
+```
