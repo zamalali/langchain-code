@@ -1,0 +1,16 @@
+
+graph LR
+    A[User Input] --> B(TaskAnalyzer.analyze_task);
+    B --> C{Task Context};
+    C --> D(RuleBasedRouter.route_request);
+    D --> E{RuleBased LLM, Rule Confidence};
+    C --> F(ContextualBandit.select_arm);
+    F --> G{Bandit LLM, Bandit Confidence};
+    G -- Bandit Confidence > Threshold and Bandit Confidence > Rule Confidence --> H(Select Bandit LLM);
+    G -- Otherwise --> I(Select Rule LLM);
+    E --> I;
+    H --> J{RoutingDecision};
+    I --> J;
+    J --> K[Selected LLM];
+    K --> L(LLM Call);
+    L --> M[Response];
