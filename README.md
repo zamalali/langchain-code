@@ -1,26 +1,53 @@
+
 <div align="center">
-<pre>
-██╗      █████╗ ███╗   ██╗ ██████╗  ██████╗ ██████╗ ██████╗ ███████╗
-██║     ██╔══██╗████╗  ██║██╔════╝ ██╔════╝██╔═══██╗██╔══██╗██╔════╝
-██║     ███████║██╔██╗ ██║██║  ███╗██║     ██║   ██║██║  ██║█████╗  
-██║     ██╔══██║██║╚██╗██║██║   ██║██║     ██║   ██║██║  ██║██╔══╝  
-███████╗██║  ██║██║ ╚████║╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗
-╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
-</pre>
-<p>
-    <b>A command-line agent that writes and edits code based on your instructions.</b>
-<p>
+  <img src="assets/logo.webp" alt="LangCode Logo" width="200">
+  <br>
+  <h1>LangCode</h1>
+  <p><b>A command-line agent that writes and edits code based on your instructions.</b></p>
 </div>
 
 ---
 
 **LangCode** is an experimental AI coding agent that operates directly in your terminal. It uses a ReAct-style loop with a curated set of tools to understand your codebase, plan changes, and execute them safely. It can help you implement features, fix bugs, or just chat about your code.
 
+## Table of Contents
+
+- [Features](#features)
+- [Highlights](#highlights)
+- [How It Works](#how-it-works)
+  - [Hybrid Intelligent LLM Router](#hybrid-intelligent-llm-router)
+  - [Agent Architectures](#agent-architectures)
+  - [Deep Agent State](#deep-agent-state)
+  - [DEEP AUTOPILOT Mode](#deep-autopilot-mode)
+  - [Available Tools](#available-tools)
+    - [MCP Tools](#mcp-tools)
+    - [`deepagent` CLI Modes](#deepagent-cli-modes)
+- [Workflows](#workflows)
+- [Getting Started](#getting-started)
+  - [1. Installation](#1-installation)
+  - [2. Configuration](#2-configuration)
+  - [3. Usage](#3-usage)
+    - [`langcode chat`](#langcode-chat)
+    - [`langcode feature`](#langcode-feature)
+    - [`langcode fix`](#langcode-fix)
+    - [`deepagent`](#deepagent)
+- [Beta CLI](#beta-cli)
+- [Memory](#memory)
+- [Image Support in Chat](#image-support-in-chat)
+- [Contributing](#contributing)
+- [DeepGit Data Pipeline Workflow](#deepgit-data-pipeline-workflow)
+- [License](#license)
+- [Contributors](#contributors)
+- [Branches](#branches)
+  - [`main`](#main)
+  - [`dev`](#dev)
+  - [`draft-work`](#draft-work)
+
 ## Features
 
 -   **🤖 Interactive Chat:** Have a conversation with the agent about your project.
 -   **✨ Feature Implementation:** Describe a new feature, and the agent will plan and implement it.
--  **🐞 Bug Fixes:** Provide a bug description or a stack trace, and the agent will diagnose and patch the code.
+-   **🐞 Bug Fixes:** Provide a bug description or a stack trace, and the agent will diagnose and patch the code.
 -   **🛠️ Tool-Based:** Uses a set of tools for file system operations, code editing, and running commands.
 -   **🔒 Safe by Default:** Requires your confirmation before applying any file edits or running any commands. Use the `--apply` flag to override.
 -   **🧠 Multi-Provider:** Supports multiple LLM providers (currently Anthropic and Google Gemini).
@@ -187,13 +214,10 @@ langcode fix [OPTIONS] [REQUEST]
 
 **Example:**
 ```bash
-# Describe the bug to fix
 langcode fix "The login button is not working on the main page"
 
-# Provide an error log file for context
 langcode fix --log "errors.log"
 
-# Combine a description with a log file and verify with a test
 langcode fix "Fix the crash on image upload" --log "crash.log" --test-cmd "npm test"
 ```
 
@@ -212,15 +236,15 @@ deepagent <REQUEST>
 deepagent "Implement a new user authentication system using JWT"
 ```
 
-### Beta CLI
+## Beta CLI
 
 The `cli_beta.py` file contains a beta version of the CLI that may include experimental features. It is not guaranteed to be stable.
 
-### Memory
+## Memory
 
 The `memory` directory is currently empty but is reserved for future development of memory-related features.
 
-### Image Support in Chat
+## Image Support in Chat
 
 You can ask the agent to analyze images by using the `/img` command in a chat session.
 
@@ -277,4 +301,3 @@ This is the development branch. It contains the latest features and bug fixes. I
 This is a draft work branch. It is used for experimental features and code that is not yet ready for production. It is not guaranteed to be functional.
 
 **Note:** This branch is a dumping ground for ideas and work-in-progress code. It is not guaranteed to be stable or even functional. For stable, working code, please refer to the `dev` and `main` branches. The `draft-work` branch is meant for rough work only.
-
