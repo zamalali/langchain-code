@@ -39,21 +39,70 @@ The CLI provides a set of commands for interacting with LangCode agents and work
 
 The LangCode CLI provides the following commands:
 
-- **`chat`**: Opens an interactive chat session with the agent. This command opens an interactive chat session with the agent, allowing you to communicate in real-time by asking questions or providing instructions. The agent responds to your messages, providing information or taking actions based on your input. It supports image processing via `/img` commands, enabling you to incorporate visual information into the conversation.
-Example:
+- **`chat`**: Opens an interactive chat session with the agent. This command initiates an interactive dialogue with the LangCode agent, allowing you to communicate in real-time by posing questions or providing instructions. The agent processes your input and responds accordingly, offering information, executing actions, or requesting further clarification. The `chat` command supports two modes of operation, `react` and `deep`, selectable via the `--mode` option. It also supports image processing via `/img` commands, enabling you to incorporate visual information into the conversation. When the `--router` option is enabled, LangCode automatically selects the most appropriate LLM for the task. 
+
+  *Options:*
+    * `--llm`: Specifies the language model provider (e.g., `anthropic`, `gemini`).
+    * `--project-dir`: Sets the root directory for the project.
+    * `--mode`: Selects the reasoning engine (`react` or `deep`). Defaults to `react`.
+    * `--auto`: Enables autopilot mode (deep mode only), where the agent plans and acts without requiring user confirmation.
+    * `--router`: Enables automatic routing to the most efficient LLM.
+    * `--priority`: Sets the priority for the LLM router (`balanced`, `cost`, `speed`, or `quality`).
+    * `--verbose`: Displays model selection panels when using the router.
+
+  *Example:*
 ```bash
 langcode chat --llm gemini --project-dir myproject
 ```
 This starts a chat session using the Gemini language model and working within the `myproject` directory.
 
-- **`feature`**: Implements a new feature from a given request. This command automates the process of implementing a new feature in a codebase. You provide a description of the feature request, and the agent will automatically plan, search, edit, and verify the changes required to implement the feature. The agent leverages the ReAct framework to reason about the required steps and take actions accordingly.
+  *Example with router:*
+```bash
+langcode chat --router --priority cost --verbose
+```
+This starts a chat session using the LLM router with a cost priority, displaying model selection information.
+
+
+- **`feature`**: Implements a new feature from a given request. - **`feature`**: Implements a new feature from a given request. This command automates the process of implementing a new feature in a codebase. You provide a description of the feature request, and the agent will automatically plan, search, edit, and verify the changes required to implement the feature. The agent leverages the ReAct framework to reason about the required steps and take actions accordingly. The `feature` command uses the `FEATURE_INSTR` instruction seed to guide the agent through the implementation process.
+
+  *Options:*
+    * `--llm`: Specifies the language model provider (e.g., `anthropic`, `gemini`).
+    * `--project-dir`: Sets the root directory for the project.
+    * `--test-cmd`: Specifies a test command to run after implementing the feature.
+    * `--apply`: Applies the changes automatically without confirmation.
+    * `--router`: Enables automatic routing to the most efficient LLM.
+    * `--priority`: Sets the priority for the LLM router (`balanced`, `cost`, `speed`, or `quality`).
+    * `--verbose`: Displays model selection panels when using the router.
+
+  *Example:*
+```bash
+langcode feature "Add a new user authentication system" --apply --test-cmd "pytest"
+```
+This requests the implementation of a new user authentication system, applies the changes automatically, and runs pytest to verify the changes.
 Example:
 ```bash
 langcode feature "Add a new user authentication system" --apply --test-cmd "pytest"
 ```
 This requests the implementation of a new user authentication system, applies the changes automatically, and runs pytest to verify the changes.
 
-- **`fix`**: Fixes a bug based on a request and an optional error log. This command assists in diagnosing and fixing bugs within a codebase. You provide a description of the bug and an optional error log, and the agent will trace the error, pinpoint the cause, patch the code, and test the changes to ensure the bug is resolved. The agent leverages the ReAct framework to reason about the bug and take appropriate actions.
+- **`fix`**: Fixes a bug based on a request and an optional error log. - **`fix`**: Fixes a bug based on a request and an optional error log. This command assists in diagnosing and fixing bugs within a codebase. You provide a description of the bug and an optional error log, and the agent will trace the error, pinpoint the cause, patch the code, and test the changes to ensure the bug is resolved. The agent leverages the ReAct framework to reason about the bug and take appropriate actions. The `fix` command uses the `BUGFIX_INSTR` instruction seed to guide the agent through the bug-fixing process.
+
+  *Options:*
+    * `--request`: Specifies the bug fix request (e.g., "Fix crash on image upload").
+    * `--log`: Provides the path to an error log or stack trace.
+    * `--llm`: Specifies the language model provider (e.g., `anthropic`, `gemini`).
+    * `--project-dir`: Sets the root directory for the project.
+    * `--test-cmd`: Specifies a test command to run after fixing the bug.
+    * `--apply`: Applies the changes automatically without confirmation.
+    * `--router`: Enables automatic routing to the most efficient LLM.
+    * `--priority`: Sets the priority for the LLM router (`balanced`, `cost`, `speed`, or `quality`).
+    * `--verbose`: Displays model selection panels when using the router.
+
+  *Example:*
+```bash
+langcode fix "Resolve the issue with database connection" --project-dir myproject
+```
+This requests a fix for a database connection issue within the `myproject` directory.
 Example:
 ```bash
 langcode fix "Resolve the issue with database connection" --project-dir myproject
@@ -85,7 +134,7 @@ This requests a fix for a database connection issue within the `myproject` direc
 
 ### Options
 
-Each command supports a set of common options that allow you to customize the behavior of the agent and the execution of the command. These options provide fine-grained control over various aspects of the process:
+Each command supports a set of common options that allow you to customize the behavior of the agent and the execution of the command. These options provide fine-grained control over various aspects of the process. For detailed information about each option, refer to the command-specific documentation.
 
 - **`--llm`**: Specifies the language model provider to use (e.g., `anthropic`, `gemini`). This option allows you to choose the LLM that best suits your needs. Different LLMs may have different strengths and weaknesses, so it's important to choose the right one for the task at hand.
 - **`--project-dir`**: Sets the root directory for the project the agent will work on. This option allows you to specify the codebase that the agent will operate on. The agent will only be able to access files and directories within the project directory.
@@ -131,7 +180,7 @@ You can customize the appearance of the CLI by modifying the `rich` configuratio
 
 
 
-The CLI provides a rich and interactive session UI using the `rich` library. This enhances the user experience by providing:
+The CLI provides a rich and interactive session UI, powered by the `rich` library, to enhance the user experience. This includes:
 
 - An engaging ASCII banner for the LangCode application, displayed upon startup.
 - A dynamic status panel that provides real-time information about the current provider, project directory, and other relevant session details.
