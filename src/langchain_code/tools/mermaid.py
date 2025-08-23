@@ -1,9 +1,15 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Optional, Iterable
+from typing import Any, Optional, Iterable, Tuple
 import json
 import time
 import re
+import os
+import base64
+import zlib
+import shutil
+import tempfile
+import subprocess
 
 from langchain_core.tools import tool
 
@@ -40,7 +46,6 @@ def _rooted(project_dir: str, path: str) -> Path:
 
 
 def _loads_json_or_yaml(val: Any, default: Any):
-    """Accept dict/list already, or parse JSON/YAML strings. Fallback to default."""
     if val is None:
         return default
     if isinstance(val, (dict, list)):
@@ -62,7 +67,6 @@ def _loads_json_or_yaml(val: Any, default: Any):
 
 
 def _looks_like_mermaid(src: Any) -> Optional[str]:
-    """If `src` is a string that already looks like Mermaid syntax, return it."""
     if not isinstance(src, str):
         return None
     s = src.strip()
@@ -73,7 +77,6 @@ def _looks_like_mermaid(src: Any) -> Optional[str]:
 
 
 def _norm_nodes(raw: Any) -> dict[str, str] | str:
-    """Normalize node formats into {id: label}. If Mermaid string, return it."""
     m = _looks_like_mermaid(raw)
     if m is not None:
         return m
@@ -108,7 +111,6 @@ def _norm_nodes(raw: Any) -> dict[str, str] | str:
 
 
 def _parse_edge_string(s: str) -> Optional[dict]:
-    """Parse string edges like 'A->B: label' or 'A-->B|label|' into normalized dict."""
     s = s.strip()
     m = re.match(r"^\s*([\w.\-:/]+)\s*[-=]{1,3}>\s*([\w.\-:/]+)\s*[:|]?\s*(.*)$", s)
     if not m:
@@ -123,10 +125,6 @@ def _flatten(iterable: Iterable[Any]) -> list[Any]:
 
 
 def _norm_edges(raw: Any) -> tuple[list[dict], dict[str, str], Optional[str]]:
-    """
-    Normalize edges into list of dicts; also return nodes inferred from edges.
-    Returns (edges, inferred_nodes, mermaid_passthrough).
-    """
     m = _looks_like_mermaid(raw)
     if m is not None:
         return ([], {}, m)
@@ -136,7 +134,6 @@ def _norm_edges(raw: Any) -> tuple[list[dict], dict[str, str], Optional[str]]:
     inferred_nodes: dict[str, str] = {}
 
     if isinstance(raw, dict):
-        # adjacency: {"A": ["B","C"]} or {"A":[{"to":"B","label":"x"}]}
         for k, v in raw.items():
             src = str(k)
             if isinstance(v, (list, tuple)):
@@ -201,50 +198,154 @@ def _norm_edges(raw: Any) -> tuple[list[dict], dict[str, str], Optional[str]]:
     return ([], {}, None)
 
 
-# --- HTTP fallback (API-only) -------------------------------------------------
+# ---------------- HTTP helpers & API renderers ----------------
 
-def _http_post_bytes(url: str, data: bytes, content_type: str = "text/plain; charset=utf-8", timeout: int = 20) -> bytes:
-    """
-    Minimal HTTP POST using stdlib only (no requests).
-    """
+def _http_get(url: str, timeout: int = 30) -> Tuple[bytes, str]:
     import urllib.request
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": content_type}, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec - user opted into API rendering
-        return resp.read()
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("User-Agent", "Mozilla/5.0 (compatible; Mermaid-Renderer/1.0)")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec
+        return resp.read(), resp.headers.get("Content-Type", "")
 
+def _http_post(url: str, data: bytes, content_type: str, timeout: int = 30) -> Tuple[bytes, str]:
+    import urllib.request
+    req = urllib.request.Request(url, data=data, headers={
+        "Content-Type": content_type,
+        "User-Agent": "Mozilla/5.0 (compatible; Mermaid-Renderer/1.0)"
+    }, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec
+        return resp.read(), resp.headers.get("Content-Type", "")
 
-def _render_png_via_api_fallback(diagram: str) -> tuple[bytes, str]:
-    """
-    Try Mermaid.ink first, then Kroki. Returns (png_bytes, source_name).
-    """
-    payload = diagram.encode("utf-8")
+def _is_png(bytes_: bytes, content_type: str) -> bool:
+    return bytes_.startswith(b"\x89PNG\r\n\x1a\n") or ("image/png" in (content_type or "").lower())
 
-    # 1) Mermaid.ink POST
+def _encode_mermaid_ink(code: str) -> str:
+    """Fixed Mermaid.ink encoder with proper URL encoding"""
     try:
-        png = _http_post_bytes("https://mermaid.ink/img/", payload, "text/plain; charset=utf-8", timeout=30)
-        if png and len(png) > 0:
-            return png, "mermaid.ink"
-    except Exception:
-        pass
+        # Clean the mermaid code - remove any extra whitespace
+        cleaned_code = code.strip()
+        
+        # Use standard zlib compression
+        compressed = zlib.compress(cleaned_code.encode("utf-8"))
+        
+        # Use standard base64 encoding (not URL-safe initially)
+        b64 = base64.b64encode(compressed).decode("ascii")
+        
+        # Now make it URL-safe
+        b64_urlsafe = b64.replace("+", "-").replace("/", "_").rstrip("=")
+        
+        return f"https://mermaid.ink/img/{b64_urlsafe}"
+    except Exception as e:
+        raise RuntimeError(f"Failed to encode for mermaid.ink: {e}")
 
-    # 2) Kroki (text/plain endpoint)
+def _render_png_via_mermaid_ink(diagram: str) -> Tuple[bytes, str]:
+    """Improved Mermaid.ink renderer with better error handling"""
     try:
-        png = _http_post_bytes("https://kroki.io/mermaid/png", payload, "text/plain; charset=utf-8", timeout=30)
-        if png and len(png) > 0:
-            return png, "kroki.io"
-    except Exception:
-        pass
+        url = _encode_mermaid_ink(diagram)
+        print(f"Requesting: {url[:100]}...")  # Debug output
+        data, ctype = _http_get(url, timeout=45)
+        if _is_png(data, ctype):
+            return data, "mermaid.ink"
+        # Check if it's an error response
+        if data.startswith(b"<!DOCTYPE") or b"error" in data.lower():
+            error_text = data[:200].decode('utf-8', errors='ignore')
+            raise RuntimeError(f"Mermaid.ink returned error page: {error_text}")
+        raise RuntimeError(f"Mermaid.ink returned non-PNG (content-type={ctype!r}, size={len(data)}).")
+    except Exception as e:
+        raise RuntimeError(f"Mermaid.ink rendering failed: {e}")
 
-    # 3) Kroki JSON endpoint (just in case)
+def _render_png_via_kroki(diagram: str) -> Tuple[bytes, str]:
+    """Improved Kroki renderer"""
     try:
-        body = json.dumps({"diagram_source": diagram}).encode("utf-8")
-        png = _http_post_bytes("https://kroki.io/mermaid/png", body, "application/json; charset=utf-8", timeout=30)
-        if png and len(png) > 0:
-            return png, "kroki.io(json)"
-    except Exception:
-        pass
+        # Try text/plain first (simpler)
+        print("Trying Kroki text/plain method...")
+        data, ctype = _http_post("https://kroki.io/mermaid/png", diagram.encode("utf-8"), "text/plain; charset=utf-8", 45)
+        if _is_png(data, ctype):
+            return data, "kroki.io(text)"
+        
+        # Try JSON method
+        print("Trying Kroki JSON method...")
+        body = json.dumps({"diagram_source": diagram, "diagram_type": "mermaid", "output_format": "png"}).encode("utf-8")
+        data, ctype = _http_post("https://kroki.io/mermaid/png", body, "application/json; charset=utf-8", 45)
+        if _is_png(data, ctype):
+            return data, "kroki.io(json)"
+            
+        raise RuntimeError(f"Kroki returned non-PNG (content-type={ctype!r}, size={len(data)}).")
+    except Exception as e:
+        raise RuntimeError(f"Kroki rendering failed: {e}")
 
-    raise RuntimeError("All API renderers failed (mermaid.ink, kroki.io).")
+# ---------------- Local renderer (mmdc) ----------------
+
+def _have_mmdc() -> Optional[str]:
+    # Prefer explicit env var first
+    explicit = os.getenv("MERMAID_CLI")  # full path to mmdc
+    if explicit and Path(explicit).exists():
+        return explicit
+    which = shutil.which("mmdc")
+    if which:
+        return which
+    # Allow npx usage if desired (requires internet on first run)
+    npx = shutil.which("npx")
+    if npx:
+        return "npx -y @mermaid-js/mermaid-cli mmdc"  # used via shell=True
+    return None
+
+def _run_mmdc_to_png(diagram: str, out_path: Path) -> str:
+    mmdc = _have_mmdc()
+    if not mmdc:
+        raise FileNotFoundError(
+            "Mermaid CLI (mmdc) not found. Install with `npm i -g @mermaid-js/mermaid-cli` "
+            "or set MERMAID_CLI to its full path."
+        )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        inp = Path(td) / "diagram.mmd"
+        inp.write_text(diagram, encoding="utf-8")
+
+        # Optional Chromium path for corp/offline boxes
+        chrome = os.getenv("MERMAID_CHROMIUM_PATH") or os.getenv("PUPPETEER_EXECUTABLE_PATH")
+        puppeteer_cfg = None
+        cmd: list[str] | str
+
+        if chrome and Path(chrome).exists():
+            puppeteer_cfg = Path(td) / "puppeteer.json"
+            puppeteer_cfg.write_text(json.dumps({"executablePath": str(Path(chrome).resolve())}), encoding="utf-8")
+
+        if " " in (mmdc or "") and mmdc.startswith("npx "):
+            # Use shell to support inline "npx -y ..."
+            cmd = f'{mmdc} -i "{inp}" -o "{out_path}"{" -p " + str(puppeteer_cfg) if puppeteer_cfg else ""}'
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        else:
+            cmd_list = [mmdc, "-i", str(inp), "-o", str(out_path)]
+            if puppeteer_cfg:
+                cmd_list += ["-p", str(puppeteer_cfg)]
+            proc = subprocess.run(cmd_list, shell=False, capture_output=True, text=True)
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"mmdc failed (code={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}")
+
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("mmdc reported success but PNG not found or empty.")
+    return f"Saved Mermaid PNG to {out_path} ({out_path.stat().st_size} bytes) via mmdc."
+
+
+def _validate_mermaid_syntax(diagram: str) -> str:
+    """Validate and clean Mermaid syntax"""
+    lines = [line.strip() for line in diagram.split('\n') if line.strip()]
+    
+    # Basic validation - ensure it starts with a valid diagram type
+    if not lines:
+        raise ValueError("Empty diagram")
+        
+    first_line = lines[0].lower()
+    valid_starts = ['graph', 'flowchart', 'sequencediagram', 'classdiagram', 'statediagram', 'erdiagram', 'gantt']
+    
+    if not any(first_line.startswith(start) for start in valid_starts):
+        # If it doesn't start with a valid diagram type, assume it's a flowchart
+        lines.insert(0, "flowchart TD")
+    
+    return '\n'.join(lines)
 
 
 def make_mermaid_tools(project_dir: str):
@@ -263,22 +364,7 @@ def make_mermaid_tools(project_dir: str):
     ) -> str:
         """
         Build Mermaid syntax from a graph (nodes/edges) and return it.
-
-        Accepted node formats:
-        - {"id": "Label", ...}
-        - [{"id":"A","label":"Alpha"}, {"id":"B","label":"Beta"}]
-        - ["A","B","C"]  (label=id)
-        - Raw Mermaid string (graph/flowchart/etc.) -> passed through
-
-        Accepted edge formats:
-        - [{"source":"A","target":"B","data":{"label":"..."}}, ...]
-        - [{"from":"A","to":"B","label":"..."}]
-        - [["A","B","...label..."], ...]
-        - {"A":["B","C"], "D":[{"to":"E","label":"..."}]}  (adjacency)
-        - ["A->B: label", "X-->Y|label|"]  (strings)
-        - Raw Mermaid string -> passed through
-
-        All parameters also accept JSON (or YAML) strings.
+        (Accepts JSON/YAML and raw Mermaid; see code for accepted formats.)
         """
         if not _MERMAID_OK:
             return (
@@ -286,29 +372,29 @@ def make_mermaid_tools(project_dir: str):
                 "Please upgrade `langchain-core` to a version that includes `graph_mermaid`."
             )
 
-        # Passthrough if either is already Mermaid
         mermaid_nodes = _looks_like_mermaid(nodes)
         mermaid_edges = _looks_like_mermaid(edges)
         if mermaid_nodes or mermaid_edges:
             syntax = mermaid_nodes or mermaid_edges or ""
-            return f"```mermaid\n{syntax}\n```" if fenced else syntax
+            validated = _validate_mermaid_syntax(syntax)
+            return f"```mermaid\n{validated}\n```" if fenced else validated
 
         try:
             nodes_obj_or_str = _norm_nodes(nodes)
             if isinstance(nodes_obj_or_str, str):
                 syntax = nodes_obj_or_str
-                return f"```mermaid\n{syntax}\n```" if fenced else syntax
+                validated = _validate_mermaid_syntax(syntax)
+                return f"```mermaid\n{validated}\n```" if fenced else validated
             nodes_obj: dict[str, str] = nodes_obj_or_str
 
             edges_list, inferred_from_edges, mermaid_from_edges = _norm_edges(edges)
             if mermaid_from_edges:
-                return f"```mermaid\n{mermaid_from_edges}\n```" if fenced else mermaid_from_edges
+                validated = _validate_mermaid_syntax(mermaid_from_edges)
+                return f"```mermaid\n{validated}\n```" if fenced else validated
 
-            # Ensure all edge nodes exist
             for nid in inferred_from_edges.keys():
                 nodes_obj.setdefault(nid, nid)
 
-            # Respect explicit endpoints
             if first_node and first_node not in nodes_obj:
                 nodes_obj[str(first_node)] = str(first_node)
             if last_node and last_node not in nodes_obj:
@@ -335,7 +421,6 @@ def make_mermaid_tools(project_dir: str):
                     frontmatter_config=fm_obj,
                 )
             except TypeError:
-                # Retry without node_styles for older LC versions
                 syntax = draw_mermaid(
                     nodes=nodes_obj,
                     edges=edges_list,
@@ -348,7 +433,8 @@ def make_mermaid_tools(project_dir: str):
                     frontmatter_config=fm_obj,
                 )
 
-            return f"```mermaid\n{syntax}\n```" if fenced else syntax
+            validated = _validate_mermaid_syntax(syntax)
+            return f"```mermaid\n{validated}\n```" if fenced else validated
 
         except Exception as e:
             return f"Error generating Mermaid: {type(e).__name__}: {e}"
@@ -357,17 +443,19 @@ def make_mermaid_tools(project_dir: str):
     def mermaid_png(
         mermaid_syntax: str,
         output_file_path: Optional[str] = None,
-        draw_method: str = "API",  # ignored; we force API-only below
+        draw_method: str = "AUTO",   # AUTO | API | LOCAL (kept for backward compat)
         background_color: Optional[str] = "white",
         padding: int = 10,
-        max_retries: int = 1,
+        max_retries: int = 2,  # Increased retries
         retry_delay: float = 1.0,
     ) -> str:
         """
         Render Mermaid syntax to a PNG file inside the repo and return the saved path.
         Accepts fenced blocks; extracts inner Mermaid automatically.
 
-        This implementation **forces API rendering only** and never requires pyppeteer.
+        Modes:
+          - env MERMAID_RENDER_MODE=local|api|auto (default auto)
+          - draw_method overrides per-call (LOCAL/API/AUTO)
         """
         if not _MERMAID_OK:
             return (
@@ -383,6 +471,13 @@ def make_mermaid_tools(project_dir: str):
         if not body.strip():
             return "Error rendering Mermaid PNG: empty mermaid_syntax."
 
+        # Validate the mermaid syntax
+        try:
+            body = _validate_mermaid_syntax(body)
+            print(f"Validated Mermaid syntax:\n{body}")
+        except ValueError as e:
+            return f"Error: Invalid Mermaid syntax: {e}"
+
         # Ensure .png filename
         rel = output_file_path or f"assets/mermaid_{int(time.time())}.png"
         if not str(rel).lower().endswith(".png"):
@@ -394,32 +489,52 @@ def make_mermaid_tools(project_dir: str):
             return f"Invalid output path: {e}"
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 1) Try LangChain's API renderer explicitly (force API enum)
-        try:
-            method = MermaidDrawMethod.API  # force API-only
-            data = draw_mermaid_png(
-                mermaid_syntax=body,
-                output_file_path=str(out_path),
-                draw_method=method,
-                background_color=background_color,
-                padding=padding,
-                max_retries=max_retries,
-                retry_delay=retry_delay,
-            )
-            if not out_path.exists() and data:
-                out_path.write_bytes(data)
-            if out_path.exists():
-                return f"Saved Mermaid PNG to {out_path.relative_to(Path(project_dir))} ({out_path.stat().st_size} bytes)."
-        except Exception as e:
-            # If the internal path tries to use pyppeteer or anything else, fall through to raw HTTP APIs.
-            pass
+        # Decide mode
+        env_mode = (os.getenv("MERMAID_RENDER_MODE") or "AUTO").strip().upper()
+        call_mode = (draw_method or "AUTO").strip().upper()
+        mode = call_mode if call_mode in {"LOCAL", "API", "AUTO"} else env_mode
+        if mode not in {"LOCAL", "API", "AUTO"}:
+            mode = "AUTO"
 
-        # 2) Fallback: direct HTTP renderers (mermaid.ink → kroki.io)
-        try:
-            png, source = _render_png_via_api_fallback(body)
+        # Helper to try saving bytes
+        def _save_and_report(png: bytes, source: str) -> str:
             out_path.write_bytes(png)
             return f"Saved Mermaid PNG to {out_path.relative_to(Path(project_dir))} ({len(png)} bytes) via {source}."
-        except Exception as e:
-            return f"Error rendering Mermaid PNG: {type(e).__name__}: {e}"
+
+        last_error = None
+        
+        # Try LOCAL first (AUTO path prefers local for offline reliability)
+        if mode in {"LOCAL", "AUTO"}:
+            try:
+                return _run_mmdc_to_png(body, out_path)
+            except Exception as e_local:
+                last_error = f"Local: {e_local}"
+                print(f"Local rendering failed: {e_local}")
+                if mode == "LOCAL":
+                    return f"Error rendering Mermaid PNG locally: {type(e_local).__name__}: {e_local}"
+
+        # Try API(s) with retries
+        for attempt in range(max_retries):
+            try:
+                # Try our improved Mermaid.ink implementation
+                print(f"Trying Mermaid.ink (attempt {attempt + 1}/{max_retries})")
+                png, source = _render_png_via_mermaid_ink(body)
+                return _save_and_report(png, source)
+            except Exception as e_mermaid:
+                last_error = f"Mermaid.ink: {e_mermaid}"
+                print(f"Mermaid.ink failed: {e_mermaid}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+
+        # Try Kroki as final fallback
+        try:
+            print("Trying Kroki as final fallback...")
+            png, source = _render_png_via_kroki(body)
+            return _save_and_report(png, source)
+        except Exception as e_kroki:
+            last_error = f"Kroki: {e_kroki}"
+            print(f"Kroki failed: {e_kroki}")
+
+        return f"Error rendering Mermaid PNG: All methods failed. Last errors: {last_error}"
 
     return [mermaid_draw, mermaid_png]
