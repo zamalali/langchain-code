@@ -17,6 +17,20 @@ from ..tools.mermaid import make_mermaid_tools
 from ..mcp_loader import get_mcp_tools
 import asyncio
 
+def load_langcode_context(project_dir: Path) -> str:
+    """
+    Load project-specific instructions from .langcode/langcode.md
+    located at the project root. Returns empty string if not found.
+    """
+    ctx_file = project_dir / ".langcode" / "langcode.md"
+    if ctx_file.exists():
+        try:
+            return "\n\n# Project Context\n" + ctx_file.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"\n\n# Project Context\n(Error reading langcode.md: {e})"
+    return ""
+
+
 try:
     from langchain_tavily import TavilySearch
 except Exception:
@@ -70,7 +84,9 @@ def create_deep_agent(
     - Else fall back to get_model(provider) (original behavior).
     """
     model = llm or get_model(provider)
-    prompt = (BASE_SYSTEM + "\n" + (instructions or "") + "\n" + BASE_DEEP_SUFFIX).strip()
+    project_context = load_langcode_context(project_dir)
+
+    prompt = (BASE_SYSTEM + "\n" + (instructions or "") + "\n" + BASE_DEEP_SUFFIX + project_context).strip()
 
     tools = asyncio.run(_load_dynamic_tools(project_dir, model, apply, test_cmd))
     task_tool = create_task_tool(tools, instructions or BASE_SYSTEM, subagents or [], model, state_schema)
@@ -83,5 +99,5 @@ def create_deep_agent(
         state_schema=state_schema,
         checkpointer=checkpointer,
     )
-    graph.config = {"recursion_limit": 50}
+    graph.config = {"recursion_limit": 70}
     return graph

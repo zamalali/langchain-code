@@ -1,3 +1,9 @@
+<div align="center">
+  <img src="../assets/logo.png" alt="LangCode Logo" width="180" />
+  <h1><b>LangCode</b></h1>
+  <p><b>The only CLI you need.</b></p>
+</div>
+
 # Contributing to LangCode
 
 We welcome contributions to LangCode! This guide outlines the process and best practices for contributing to the project.
@@ -21,7 +27,7 @@ There are several ways you can contribute to LangCode:
 2.  **Clone Your Fork:** Clone the repository to your local machine:
 
     ```bash
-    git clone https://github.com/YOUR_USERNAME/langchain-code.git
+    git clone https://github.com/zamalali/langchain-code.git
     cd langchain-code
     ```
 
@@ -35,7 +41,7 @@ There are several ways you can contribute to LangCode:
 4.  **Install Dependencies:**
 
     ```bash
-    pip install -r requirements.txt
+    pip install -e .
     ```
 
 5.  **Create a Branch:** Create a new branch for your contribution:

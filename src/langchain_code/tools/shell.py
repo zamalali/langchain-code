@@ -7,8 +7,23 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
     @tool("run_cmd", return_direct=False)
     def run_cmd(command: str) -> str:
         """
-        Run a shell command in cwd. Confirmation required.
-        Use '{{TEST_CMD}}' placeholder to run the provided test_cmd if configured.
+        Run a shell command in the project directory (`cwd`).
+
+        Use this tool for tasks such as:
+        - Listing files or directories (`ls -la`, `dir`)
+        - Finding a file (`find . -name "config.py"`)
+        - Searching file contents (`grep "Router" -r src/`)
+        - Running project commands (`pytest`, `make build`)
+
+        Guidelines:
+        - Pass a single command string (chain with `&&` if needed).
+        - `{TEST_CMD}` will be replaced with the configured test command if used.
+        - Avoid destructive or interactive commands (`rm -rf`, `vim`, etc.).
+
+        Output always includes:
+        - The executed command and exit code
+        - Captured stdout (if any)
+        - Captured stderr (if any)
         """
         cmd = command.strip()
         if cmd == "{TEST_CMD}" and test_cmd:

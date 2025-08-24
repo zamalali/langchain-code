@@ -6,17 +6,17 @@
 
 ---
 
-LangCode is a terminal‑first, agentic coding tool that understands your codebase and gets work done. It combines the best ideas from Google’s Gemini CLI and Anthropic’s Claude Code into a single, extensible workflow: navigate code, plan changes, apply safe diffs, run tests, and manage git — all from the command line.
+LangCode is a terminal-first, agentic coding tool designed to deeply understand your codebase and automate coding tasks. It seamlessly integrates the best features of Google's Gemini CLI and Anthropic's Claude Code into a unified and extensible workflow, enabling you to navigate code, plan changes, apply safe diffs, run tests, and manage Git operations directly from the command line. LangCode empowers developers to focus on high-level problem-solving by automating repetitive and time-consuming coding tasks.
 
 ## At a glance
 
-* Terminal‑first developer UX
-* Multi‑provider LLM routing (Anthropic, Google Gemini)
-* Safe, reviewable edits by diff with explicit apply gates
-* Long‑horizon “Deep Agent” for complex, multi‑step tasks
-* ReAct loop for quick chats, lookups, and edits
-* Built‑in tools (fs, grep, glob, cmds, tests) and MCP extension support
-* Optional fully autonomous DEEP AUTOPILOT mode
+* **Terminal-first developer UX:** Provides a seamless command-line experience for interacting with your codebase.
+* **Multi-provider LLM routing:** Intelligently routes requests to the most appropriate Large Language Model (LLM) provider (Anthropic, Google Gemini) based on task requirements.
+* **Safe, reviewable edits by diff:** Ensures code changes are safe and easily reviewable by generating explicit diffs and requiring confirmation before applying modifications.
+* **Long-horizon “Deep Agent”:** Enables the execution of complex, multi-step tasks that require sustained reasoning and planning.
+* **ReAct loop:** Facilitates quick chats, code lookups, and targeted edits through an interactive Read-Act-Observe loop.
+* **Built-in tools:** Offers a comprehensive suite of built-in tools (fs, grep, glob, cmds, tests) and supports Model Context Protocol (MCP) extension for enhanced functionality.
+* **DEEP AUTOPILOT mode:** Provides an optional fully autonomous mode for end-to-end task execution with minimal human intervention.
 
 ## Installation
 
@@ -255,6 +255,22 @@ deepagent "Introduce feature flags with config, implement two flags, add tests"
 * Ensure provider keys are present in `.env`
 * Narrow scope or provide `--include-directories` for large monorepos
 * File an issue with a minimal reproduction
+
+## Configuration
+
+LangCode can be configured via environment variables and project-specific files. The following environment variables are supported:
+
+* `ANTHROPIC_API_KEY`: API key for Anthropic Claude.
+* `GOOGLE_API_KEY`: API key for Google Gemini.
+
+Project-specific configuration files:
+
+* `./.langcode/mcp.json`: Configuration for Model Context Protocol (MCP) servers.
+* `./.langcode/`: Directory for project-specific context or defaults.
+
+## Custom Tools
+
+LangCode can be extended with custom tools using the Model Context Protocol (MCP). To create a custom tool, you need to define a server that implements the MCP protocol and register it in the `mcp.json` file. Once configured, you can invoke the tool naturally in chat or within Deep Agent plans.
 
 ## Contributing
 
