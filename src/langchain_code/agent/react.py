@@ -25,12 +25,26 @@ try:
 except Exception:
     TavilySearch = None
 
+def load_langcode_context(project_dir: Path) -> str:
+    """
+    Load project-specific instructions from .langcode/langcode.md
+    located at the project root. Returns empty string if not found.
+    """
+    ctx_file = project_dir / ".langcode" / "langcode.md"
+    if ctx_file.exists():
+        try:
+            return "\n\n# Project Context\n" + ctx_file.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"\n\n# Project Context\n(Error reading langcode.md: {e})"
+    return ""
+
 def _escape_braces(text: str) -> str:
     return text.replace("{", "{{").replace("}", "}}")
 
-def build_prompt(instruction_seed: Optional[str]) -> ChatPromptTemplate:
+def build_prompt(instruction_seed: Optional[str], project_dir: Path) -> ChatPromptTemplate:
     system_extra = ("\n\n" + instruction_seed) if instruction_seed else ""
-    system_text = _escape_braces(BASE_SYSTEM + system_extra)
+    project_context = load_langcode_context(project_dir)
+    system_text = _escape_braces(BASE_SYSTEM + system_extra + project_context)
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_text),
         MessagesPlaceholder("chat_history"),
@@ -71,9 +85,11 @@ def build_react_agent(
     tools.extend(mcp_tools)
     tools.extend(make_mermaid_tools(str(project_dir)))
     if TavilySearch:
-        tools.append(TavilySearch(max_results=5, topic="general"))
-
-    prompt = build_prompt(instruction_seed)
+        tools.append(TavilySearch(max_results=5, topic="general", description=
+                "Use TavilySearch for internet or websearch to answer questions that require up-to-date information "
+                "from the web. Best for research, current events, general knowledge, news etc.")
+                )
+    prompt = build_prompt(instruction_seed, project_dir)
     agent = create_tool_calling_agent(model, tools, prompt)
 
     executor = AgentExecutor(

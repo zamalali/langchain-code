@@ -1,16 +1,39 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 import warnings
+import sys
+import os
+import click  # used for fallback editing if no terminal editor
+import platform
 from collections import OrderedDict
+import shutil
+import subprocess
+import difflib
+from datetime import datetime
+
+# cross-platform raw key input
+try:
+    import termios
+    import tty
+except Exception:  # windows
+    termios = None
+    tty = None
+try:
+    import msvcrt  # type: ignore
+except Exception:
+    msvcrt = None
 
 import typer
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.style import Style
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
+from rich.align import Align
+from rich.columns import Columns
+from rich.table import Table
 from rich import box
 from pyfiglet import Figlet
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -28,7 +51,6 @@ from .workflows.feature_impl import FEATURE_INSTR
 from .workflows.bug_fix import BUGFIX_INSTR
 from .workflows.auto import AUTO_DEEP_INSTR
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.messages import ToolMessage
 
 
 APP_HELP = """
@@ -40,7 +62,11 @@ Key flags (for `chat`):
   • --mode [react|deep]   Choose the reasoning engine (default: react).
       - react  : Classic ReAct agent with tools.
       - deep   : LangGraph-style multi-step agent.
-  • --auto                 Autopilot (deep mode only): plan + act with no questions.
+  • --auto                 Autopilot (deep mode only). The deep agent will plan+act end-to-end
+                           WITHOUT asking questions (it still uses tools safely). Think “hands-off planning”.
+  • --apply                Write changes to disk and run commands for you (feature/fix flows).
+                           If OFF, the agent proposes diffs only. Think “permission to execute”.
+
   • --router               Auto-route to the most efficient LLM per query (uses Gemini if --llm not provided).
   • --priority             Router priority: balanced | cost | speed | quality (default: balanced)
   • --verbose              Show router model-selection panels.
@@ -51,13 +77,20 @@ Examples:
   • langcode chat --router --priority cost --verbose
   • langcode feature "Add a dark mode toggle" --router --priority quality
   • langcode fix --log error.log --test-cmd "pytest -q" --router
+
+Custom instructions:
+  • Put project-specific rules in .langcode/langcode.md (created automatically).
+  • From the launcher, select “Custom Instructions” to open your editor; or run `langcode instr`.
+
+NEW:
+  • Just run `langcode` to open a beautiful interactive launcher.
+    Use ↑/↓ to move, ←/→ to change values, Enter to start, h for help, q to quit.
 """
 
 app = typer.Typer(add_completion=False, help=APP_HELP.strip())
 console = Console()
 PROMPT = "[bold green]langcode[/bold green] [dim]›[/dim] "
 
-# ---------- tiny in-memory agent cache (per model/provider/mode/project) ----------
 _AGENT_CACHE: "OrderedDict[Tuple[str, str, str, str, bool], Any]" = OrderedDict()
 _AGENT_CACHE_MAX = 6
 
@@ -73,7 +106,208 @@ def _agent_cache_put(key: Tuple[str, str, str, str, bool], value: Any) -> None:
     while len(_AGENT_CACHE) > _AGENT_CACHE_MAX:
         _AGENT_CACHE.popitem(last=False)
 
-# ---------- UI helpers ----------
+# =========================
+# Custom Instructions (.langcode/langcode.md)
+# =========================
+
+LANGCODE_DIRNAME = ".langcode"
+LANGCODE_FILENAME = "langcode.md"
+
+def _ensure_langcode_md(project_dir: Path) -> Path:
+    """
+    Ensure .langcode/langcode.md exists. Return its Path.
+    """
+    cfg_dir = project_dir / LANGCODE_DIRNAME
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    md_path = cfg_dir / LANGCODE_FILENAME
+    if not md_path.exists():
+        template = f"""# LangCode — Project Custom Instructions
+
+Use this file to add project-specific guidance for the agent.
+These notes are appended to the base system prompt in both ReAct and Deep agents.
+
+**Tips**
+- Keep it concise and explicit.
+- Prefer bullet points and checklists.
+- Mention repo conventions, must/shouldn’t rules, style guides, and gotchas.
+
+## Project Rules
+- [ ] e.g., All edits must run `pytest -q` and pass.
+- [ ] e.g., Use Ruff & Black for Python formatting.
+
+## Code Style & Architecture
+- e.g., Follow existing module boundaries in `src/...`
+
+## Tooling & Commands
+- e.g., Use `make test` to run the test suite.
+
+---
+_Created {datetime.now().strftime('%Y-%m-%d %H:%M')} by LangCode CLI_
+"""
+        md_path.write_text(template, encoding="utf-8")
+    return md_path
+
+def _inline_capture_editor(initial_text: str) -> str:
+    """
+    Minimal inline editor fallback. Type/paste, then finish with a line: EOF
+    (Only used if no terminal editor is available.)
+    """
+    console.print(Panel.fit(
+        Text("Inline editor: Type/paste your content below. End with a line containing only: EOF", style="bold"),
+        border_style="cyan",
+        title="Inline Editor"
+    ))
+    if initial_text.strip():
+        console.print(Text("---- CURRENT CONTENT (preview) ----", style="dim"))
+        console.print(Markdown(initial_text))
+        console.print(Text("---- START TYPING (new content will replace file) ----", style="dim"))
+    lines: List[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line.strip() == "EOF":
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+def _pick_terminal_editor() -> Optional[List[str]]:
+    """
+    Choose a terminal editor command list, prioritizing Vim.
+    Order:
+      1) $LANGCODE_EDITOR (split on spaces)
+      2) $VISUAL
+      3) $EDITOR
+      4) nvim, vim, vi, nano (first found on PATH)
+      5) Windows-specific: check common Vim installation paths
+    Returns argv list or None if nothing available.
+    """
+    if os.environ.get("LANGCODE_EDITOR"):
+        return os.environ["LANGCODE_EDITOR"].split()
+    
+    for var in ("VISUAL", "EDITOR"):
+        v = os.environ.get(var)
+        if v:
+            return v.split()
+    
+    # Check PATH first
+    for cand in ("nvim", "vim", "vi", "nano"):
+        if shutil.which(cand):
+            return [cand]
+    
+    # Windows-specific: check common Vim installation paths
+    if platform.system().lower() == "windows":
+        common_vim_paths = [
+            r"C:\Program Files\Vim\vim91\vim.exe",
+            r"C:\Program Files\Vim\vim90\vim.exe",
+            r"C:\Program Files\Vim\vim82\vim.exe",
+            r"C:\Program Files (x86)\Vim\vim91\vim.exe",
+            r"C:\Program Files (x86)\Vim\vim90\vim.exe",
+            r"C:\Program Files (x86)\Vim\vim82\vim.exe",
+            r"C:\tools\vim\vim91\vim.exe",  # Chocolatey
+            r"C:\tools\vim\vim90\vim.exe",
+            r"C:\Users\{}\scoop\apps\vim\current\vim.exe".format(os.environ.get("USERNAME", "")),  # Scoop
+        ]
+        
+        for vim_path in common_vim_paths:
+            if os.path.exists(vim_path):
+                return [vim_path]
+                
+        # Also check if 'vim.exe' is in PATH but not found by shutil.which
+        try:
+            result = subprocess.run(["where", "vim"], capture_output=True, text=True, check=False)
+            if result.returncode == 0 and result.stdout.strip():
+                vim_exe = result.stdout.strip().split('\n')[0]
+                if os.path.exists(vim_exe):
+                    return [vim_exe]
+        except Exception:
+            pass
+    
+    return None
+
+
+def _open_in_terminal_editor(file_path: Path) -> bool:
+    """
+    Open the file in a terminal editor and block until it exits.
+    Returns True if the editor launched, False otherwise.
+    """
+    cmd = _pick_terminal_editor()
+    if not cmd:
+        return False
+    
+    try:
+        # On Windows, we might need to handle the console properly
+        if platform.system().lower() == "windows":
+            # Use shell=False to avoid issues with paths containing spaces
+            subprocess.run(cmd + [str(file_path)], check=False)
+        else:
+            subprocess.run([*cmd, str(file_path)], check=False)
+        return True
+    except Exception as e:
+        console.print(f"[yellow]Failed to launch editor: {e}[/yellow]")
+        return False
+
+
+def _diff_stats(before: str, after: str) -> Dict[str, int]:
+    """
+    Compute a simple added/removed stat using difflib.ndiff semantics.
+    """
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    added = removed = 0
+    for line in difflib.ndiff(before_lines, after_lines):
+        if line.startswith("+ "):
+            added += 1
+        elif line.startswith("- "):
+            removed += 1
+    return {
+        "added": added,
+        "removed": removed,
+        "total_after": len(after_lines),
+    }
+
+def _edit_langcode_md(project_dir: Path) -> None:
+    """
+    Open .langcode/langcode.md in a terminal editor (Vim-first).
+    Falls back to $VISUAL/$EDITOR, then click.edit, then inline capture if nothing available.
+    After exit, show short stats: lines added/removed and new total lines.
+    """
+    md_path = _ensure_langcode_md(project_dir)
+    original = md_path.read_text(encoding="utf-8")
+
+    launched = _open_in_terminal_editor(md_path)
+    edited_text: Optional[str] = None
+
+    if not launched:
+        edited_text = click.edit(original, require_save=False)
+        if edited_text is None:
+            edited_text = _inline_capture_editor(original)
+        if edited_text is not None and edited_text != original:
+            md_path.write_text(edited_text, encoding="utf-8")
+    else:
+        edited_text = md_path.read_text(encoding="utf-8")
+
+    if edited_text is None:
+        console.print(Panel.fit(Text("No changes saved.", style="yellow"), border_style="yellow"))
+        return
+    if edited_text == original:
+        console.print(Panel.fit(Text("No changes saved (file unchanged).", style="yellow"), border_style="yellow"))
+        return
+
+    stats = _diff_stats(original, edited_text)
+    console.print(Panel.fit(
+        Text.from_markup(
+            f"Saved [bold]{md_path}[/bold]\n"
+            f"[green]+{stats['added']}[/green] / [red]-{stats['removed']}[/red] • total {stats['total_after']} lines"
+        ),
+        border_style="green"
+    ))
+
+# =========================
+# UI helpers
+# =========================
+
 def print_langcode_ascii(
     console: Console,
     text: str = "LangCode",
@@ -126,7 +360,7 @@ def session_banner(
     interactive: bool = False,
     apply: bool = False,
     test_cmd: Optional[str] = None,
-    tips: Optional[list[str]] = None,
+    tips: Optional[List[str]] = None,
     model_info: Optional[Dict[str, Any]] = None,
     router_enabled: bool = False,
 ) -> Panel:
@@ -189,7 +423,7 @@ def _print_session_header(
     interactive: bool = False,
     apply: bool = False,
     test_cmd: Optional[str] = None,
-    tips: Optional[list[str]] = None,
+    tips: Optional[List[str]] = None,
     model_info: Optional[Dict[str, Any]] = None,
     router_enabled: bool = False,
 ) -> None:
@@ -293,9 +527,7 @@ def _extract_last_content(messages: list) -> str:
 
     return (str(c) if c is not None else str(last)).strip()
 
-# =========================
-# Provider & router helpers
-# =========================
+
 def _resolve_provider(llm_opt: Optional[str], router: bool) -> str:
     if llm_opt:
         return _resolve_provider_base(llm_opt)
@@ -320,34 +552,355 @@ def _build_deep_agent_with_optional_llm(provider: str, project_dir: Path, llm=No
     return build_deep_agent(provider=provider, project_dir=project_dir, **kwargs)
 
 # =========================
+# Interactive Launcher
+# =========================
+
+class _Key:
+    UP = "UP"
+    DOWN = "DOWN"
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+    ENTER = "ENTER"
+    ESC = "ESC"
+    Q = "Q"
+    H = "H"
+    OTHER = "OTHER"
+
+def _read_key() -> str:
+    # Windows
+    if msvcrt:
+        ch = msvcrt.getch()
+        if ch in (b'\x00', b'\xe0'):
+            ch2 = msvcrt.getch()
+            codes = {b'H': _Key.UP, b'P': _Key.DOWN, b'K': _Key.LEFT, b'M': _Key.RIGHT}
+            return codes.get(ch2, _Key.OTHER)
+        if ch in (b'\r', b'\n'):
+            return _Key.ENTER
+        if ch in (b'\x1b',):
+            return _Key.ESC
+        if ch in (b'q', b'Q'):
+            return _Key.Q
+        if ch in (b'h', b'H', b'?'):
+            return _Key.H
+        return _Key.OTHER
+
+    # POSIX
+    if not sys.stdin.isatty() or not termios or not tty:
+        # Fallback: just press Enter to continue
+        return _Key.ENTER
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        seq = os.read(fd, 3)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    if seq == b'\x1b[A':
+        return _Key.UP
+    if seq == b'\x1b[B':
+        return _Key.DOWN
+    if seq == b'\x1b[D':
+        return _Key.LEFT
+    if seq == b'\x1b[C':
+        return _Key.RIGHT
+    if seq in (b'\r', b'\n'):
+        return _Key.ENTER
+    if seq == b'\x1b':
+        return _Key.ESC
+    if seq in (b'q', b'Q'):
+        return _Key.Q
+    if seq in (b'h', b'H', b'?'):
+        return _Key.H
+    return _Key.OTHER
+
+def _render_choice(label: str, value: str, focused: bool, enabled: bool = True) -> Text:
+    chev = "▶ " if focused else "  "
+    style = "bold white" if focused and enabled else ("dim" if not enabled else "white")
+    val_style = "bold cyan" if enabled else "dim"
+    t = Text(chev + label + ": ", style=style)
+    t.append(value, style=val_style)
+    return t
+
+def _info_panel_for(field: str) -> Panel:
+    info_map = {
+        "Command": "[bold]What to do[/bold]: [cyan]chat[/cyan] (interactive), [cyan]feature[/cyan] (plan→edit→verify), [cyan]fix[/cyan] (trace→patch→test), [cyan]analyze[/cyan] (deep code insights).",
+        "Engine": "[bold]Reasoning engine[/bold]: [cyan]react[/cyan] = fast tool-using ReAct. [cyan]deep[/cyan] = LangGraph multi-step planner.",
+        "Router": "[bold]Router[/bold]: Auto-picks the most efficient LLM per prompt (priority aware). Toggle on for smarter cost/speed/quality.",
+        "Priority": "[bold]Routing priority[/bold]: [cyan]balanced[/cyan] | cost | speed | quality – influences model choice.",
+        "Autopilot": "[bold]Autopilot[/bold] (deep chat only): Agent plans and executes end-to-end [italic]without asking questions[/italic]. It still uses tools safely, but won't seek confirmation.",
+        "Apply": "[bold]Apply[/bold] (feature/fix only): If ON, the agent is allowed to [bold]write files[/bold] and [bold]run commands[/bold]. If OFF, it proposes diffs and commands but does not execute them.",
+        "LLM": "[bold]LLM provider[/bold]: Explicitly force [cyan]anthropic[/cyan] or [cyan]gemini[/cyan]. Leave blank to follow router/defaults.",
+        "Project": "[bold]Project directory[/bold]: Where the agent operates.",
+        "Custom Instructions": "[bold].langcode/langcode.md[/bold]: Project-specific instructions appended to the base prompt. Press Enter to open Vim (or $VISUAL/$EDITOR). Exit with :wq. A shortstat will be shown.",
+        "Tests": "[bold]Test command[/bold]: e.g. [cyan]pytest -q[/cyan] or [cyan]npm test[/cyan]. Used by feature/fix flows.",
+        "Start": "[bold]Enter[/bold] to launch with the current configuration.",
+        "Help": "[bold]h[/bold] to toggle help, [bold]q[/bold] or [bold]Esc[/bold] to quit.",
+    }
+    text = info_map.get(field, "Use ↑/↓ to move, ←/→ to change values, Enter to start, h for help, q to quit.")
+    return Panel(Text.from_markup(text), title="Info", border_style="green", box=box.ROUNDED)
+
+def _help_content() -> Panel:
+    return Panel(
+        Markdown(APP_HELP.strip()),
+        title="LangCode Help",
+        border_style="magenta",
+        box=box.HEAVY,
+        padding=(1, 2),
+    )
+
+def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = False) -> None:
+    console.clear()
+    print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
+
+    header = Align.center(Text("ReAct • Deep • Tools • Safe Edits", style="dim"))
+    console.print(header)
+    console.print(Rule(style="green"))
+
+    rows = []
+
+    # Build display values
+    cmd_val = state["command"]
+    engine_val = state["engine"]
+    router_val = "on" if state["router"] else "off"
+    prio_val = state["priority"]
+    auto_enabled = (state["command"] == "chat" and state["engine"] == "deep")
+    autopilot_val = "on" if (state["autopilot"] and auto_enabled) else ("off" if auto_enabled else "n/a")
+    apply_enabled = state["command"] in ("feature", "fix")
+    apply_val = "on" if (state["apply"] and apply_enabled) else ("off" if apply_enabled else "n/a")
+    llm_val = state["llm"] or "(auto)"
+    proj_val = str(state["project_dir"])
+    tests_val = state["test_cmd"] or "(none)"
+
+    # Custom instructions status
+    md_path = (state["project_dir"] / LANGCODE_DIRNAME / LANGCODE_FILENAME)
+    if md_path.exists():
+        try:
+            txt = md_path.read_text(encoding="utf-8")
+            lines = txt.count("\n") + (1 if txt and not txt.endswith("\n") else 0)
+        except Exception:
+            lines = 0
+        instr_val = f"edit…  ({LANGCODE_DIRNAME}/{LANGCODE_FILENAME}, {lines} lines)"
+    else:
+        instr_val = f"create…  ({LANGCODE_DIRNAME}/{LANGCODE_FILENAME})"
+
+    labels = [
+        ("Command", cmd_val, True),
+        ("Engine", engine_val, True),
+        ("Router", router_val, True),
+        ("Priority", prio_val, state["router"]),
+        ("Autopilot", autopilot_val, auto_enabled),
+        ("Apply", apply_val, apply_enabled),
+        ("LLM", llm_val, True),
+        ("Project", proj_val, True),
+        ("Custom Instructions", instr_val, True),
+        ("Tests", tests_val, state["command"] in ("feature", "fix")),
+        ("Start", "Press Enter", True),
+    ]
+
+    for idx, (label, value, enabled) in enumerate(labels):
+        rows.append(_render_choice(label, value, focused=(idx == focus_index), enabled=enabled))
+
+    left_panel = Panel(
+        Align.left(Text.assemble(*[r + Text("\n") for r in rows])),
+        title="Launcher",
+        border_style="cyan",
+        box=box.ROUNDED,
+        padding=(1, 2),
+    )
+
+    right_panel = _info_panel_for(labels[focus_index][0])
+
+    # main = Columns([left_panel, right_panel], expand=True, equal=True)
+    # console.print(main)
+    console.print(Group(left_panel, right_panel))
+
+    footer_items = [
+        Text("↑/↓ move  ", style="dim"),
+        Text("←/→ change  ", style="dim"),
+        Text("Enter start  ", style="dim"),
+        Text("h for help  ", style="dim"),
+        Text("q to quit", style="dim"),
+    ]
+    console.print(Align.center(Text.assemble(*footer_items)))
+    console.print(Rule(style="green"))
+    if show_help:
+        console.print(_help_content())
+
+def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    state = dict(initial_state)
+    focus_index = 0
+    show_help = False
+    fields_order = [
+        "Command", "Engine", "Router", "Priority", "Autopilot", "Apply",
+        "LLM", "Project", "Custom Instructions", "Tests", "Start"
+    ]
+
+    def toggle(field: str, direction: int) -> None:
+        if field == "Command":
+            opts = ["chat", "feature", "fix", "analyze"]
+            i = (opts.index(state["command"]) + direction) % len(opts)
+            state["command"] = opts[i]
+        elif field == "Engine":
+            opts = ["react", "deep"]
+            i = (opts.index(state["engine"]) + direction) % len(opts)
+            state["engine"] = opts[i]
+        elif field == "Router":
+            state["router"] = not state["router"]
+        elif field == "Priority":
+            if not state["router"]:
+                return
+            opts = ["balanced", "cost", "speed", "quality"]
+            i = (opts.index(state["priority"]) + direction) % len(opts)
+            state["priority"] = opts[i]
+        elif field == "Autopilot":
+            # only applicable for deep chat
+            if state["command"] == "chat" and state["engine"] == "deep":
+                state["autopilot"] = not state["autopilot"]
+        elif field == "Apply":
+            # only for feature/fix
+            if state["command"] in ("feature", "fix"):
+                state["apply"] = not state["apply"]
+        elif field == "LLM":
+            # cycle: (auto) -> anthropic -> gemini -> (auto)
+            opts = [None, "anthropic", "gemini"]
+            cur = state["llm"]
+            i = (opts.index(cur) + direction) % len(opts)
+            state["llm"] = opts[i]
+        elif field == "Project":
+            # prompt for path
+            path = console.input("[bold]Project directory[/bold] (Enter to keep current): ").strip()
+            if path:
+                p = Path(path).expanduser().resolve()
+                if p.exists() and p.is_dir():
+                    state["project_dir"] = p
+                else:
+                    console.print(Panel.fit(Text(f"Invalid directory: {p}", style="bold red"), border_style="red"))
+                    console.input("Press Enter to continue...")
+        elif field == "Custom Instructions":
+            try:
+                _edit_langcode_md(state["project_dir"])
+            except Exception as e:
+                console.print(Panel.fit(Text(f"Failed to edit custom instructions: {e}", style="bold red"), border_style="red"))
+        elif field == "Tests":
+            if state["command"] in ("feature", "fix"):
+                t = console.input("[bold]Test command[/bold] (e.g. pytest -q) – empty to clear: ").strip()
+                state["test_cmd"] = t or None
+
+    while True:
+        _draw_launcher(state, focus_index, show_help=show_help)
+        key = _read_key()
+
+        if key in (_Key.Q, _Key.ESC):
+            return None
+        if key == _Key.H:
+            show_help = not show_help
+            continue
+        if key == _Key.UP:
+            focus_index = (focus_index - 1) % len(fields_order)
+            continue
+        if key == _Key.DOWN:
+            focus_index = (focus_index + 1) % len(fields_order)
+            continue
+        if key == _Key.LEFT:
+            toggle(fields_order[focus_index], -1)
+            continue
+        if key == _Key.RIGHT:
+            toggle(fields_order[focus_index], +1)
+            continue
+        if key == _Key.ENTER:
+            field = fields_order[focus_index]
+            if field in ("Project", "Custom Instructions", "Tests"):
+                # Enter acts like edit for these fields
+                toggle(field, +1)
+                continue
+            if field == "Start":
+                return state
+            # For toggles and cycling fields, Enter also advances
+            toggle(field, +1)
+            continue
+
+# =========================
 # Root callback
 # =========================
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
     if ctx.invoked_subcommand is None:
-        provider_hint = "set via --llm anthropic|gemini"
-        project_dir = Path.cwd()
-        _print_session_header(
-            "LangChain Code Agent",
-            provider_hint,
-            project_dir,
-            interactive=False,
-            apply=False,
-            test_cmd=None,
-            tips=[
-                "Quick start:",
-                "• chat         Open an interactive session (use --mode react|deep; add --auto with deep).",
-                "• feature      Plan → search → edit → verify. (supports --apply and --test-cmd)",
-                "• fix          Diagnose & patch a bug (use --log PATH, --test-cmd). (supports --apply)",
-                "• analyze      Deep agent insights over the codebase.",
-                "Examples:",
-                "  - langcode chat --llm anthropic --mode react",
-                "  - langcode chat --llm gemini --mode deep --auto",
-                "  - langcode chat --router --priority cost --verbose",
-                "Exit anytime with /exit, /quit, or Ctrl+C. Use /clear to redraw.",
-            ],
-        )
-        typer.echo(ctx.get_help())
+        # Interactive launcher on bare `langcode`
+        default_state = {
+            "command": "chat",
+            "engine": "react",
+            "router": False,
+            "priority": "balanced",
+            "autopilot": False,
+            "apply": False,  # diff-only unless turned on for feature/fix
+            "llm": None,     # None | "anthropic" | "gemini"
+            "project_dir": Path.cwd(),
+            "test_cmd": None,
+        }
+        chosen = _launcher_loop(default_state)
+        if not chosen:
+            console.print("\n[bold]Goodbye![/bold]")
+            raise typer.Exit()
+
+        # Route to the selected command
+        cmd = chosen["command"]
+        if cmd == "chat":
+            chat(
+                llm=chosen["llm"],
+                project_dir=chosen["project_dir"],
+                mode=chosen["engine"],
+                auto=bool(chosen["autopilot"] and chosen["engine"] == "deep"),
+                router=chosen["router"],
+                priority=chosen["priority"],
+                verbose=False,
+            )
+        elif cmd == "feature":
+            # Ask for a one-liner request
+            req = console.input("[bold]Feature request[/bold] (e.g. Add a dark mode toggle): ").strip()
+            if not req:
+                console.print("[yellow]Aborted: no request provided.[/yellow]")
+                raise typer.Exit()
+            feature(
+                request=req,
+                llm=chosen["llm"],
+                project_dir=chosen["project_dir"],
+                test_cmd=chosen["test_cmd"],
+                apply=chosen["apply"],
+                router=chosen["router"],
+                priority=chosen["priority"],
+                verbose=False,
+            )
+        elif cmd == "fix":
+            # Ask for a one-liner or load a log
+            req = console.input("[bold]Bug summary[/bold] (e.g. Fix crash on image upload) [Enter to skip]: ").strip() or None
+            log_path = console.input("[bold]Path to error log[/bold] [Enter to skip]: ").strip()
+            log = Path(log_path) if log_path else None
+            fix(
+                request=req,
+                log=log if log and log.exists() else None,
+                llm=chosen["llm"],
+                project_dir=chosen["project_dir"],
+                test_cmd=chosen["test_cmd"],
+                apply=chosen["apply"],
+                router=chosen["router"],
+                priority=chosen["priority"],
+                verbose=False,
+            )
+        else:  # analyze
+            req = console.input("[bold]Analysis question[/bold] (e.g. What are the main components?): ").strip()
+            if not req:
+                console.print("[yellow]Aborted: no question provided.[/yellow]")
+                raise typer.Exit()
+            analyze(
+                request=req,
+                llm=chosen["llm"],
+                project_dir=chosen["project_dir"],
+                router=chosen["router"],
+                priority=chosen["priority"],
+                verbose=False,
+            )
         raise typer.Exit()
 
 # =========================
@@ -704,6 +1257,18 @@ def analyze(
             else str(res)
         )
     console.print(_panel_agent_output(output, title="Analysis Result"))
+
+@app.command(name="instr", help="Open or create project-specific instructions (.langcode/langcode.md) in your editor.")
+def edit_instructions(
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False)
+):
+    _print_session_header(
+        "LangChain Code Agent • Custom Instructions",
+        provider=None,
+        project_dir=project_dir,
+        interactive=False
+    )
+    _edit_langcode_md(project_dir)
 
 def main() -> None:
     app()

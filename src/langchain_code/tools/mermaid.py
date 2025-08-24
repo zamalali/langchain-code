@@ -363,14 +363,45 @@ def make_mermaid_tools(project_dir: str):
         fenced: bool = True,
     ) -> str:
         """
-        Build Mermaid syntax from a graph (nodes/edges) and return it.
-        (Accepts JSON/YAML and raw Mermaid; see code for accepted formats.)
+        Build valid Mermaid syntax from a graph definition.
+
+        Use this tool when:
+        - You need to generate Mermaid code from JSON/YAML structures.
+        - You want to normalize or validate raw Mermaid syntax.
+        - You need to insert start/end nodes or apply styles.
+
+        Accepted input formats:
+        - **Raw Mermaid** (string starting with `graph`, `flowchart`, etc.)
+        - **Nodes as dict/list**:
+            {"A": "Start", "B": "End"}
+        - **Edges as list/dict**:
+            [{"source": "A", "target": "B"}]
+        - YAML equivalents of the above.
+
+        Syntax rules (same as `mermaid_png`):
+        - Use only valid Mermaid node shapes:
+            A[Process], A(Rounded), A{Decision}, A([Stadium])
+        - Edge labels: `A -->|yes| B` (no quotes `"yes"`)
+        - Keep labels concise, no raw code inside nodes.
+
+        Output:
+        - By default, returns a fenced block:
+                ```mermaid
+                graph TD
+                A[Start] --> B[End]
+                ```
+        - If `fenced=False`, returns only the Mermaid text body.
         """
         if not _MERMAID_OK:
             return (
                 "Mermaid support unavailable. "
                 "Please upgrade `langchain-core` to a version that includes `graph_mermaid`."
             )
+
+        # If caller passed YAML/JSON-like data for node_styles, ignore it.
+        # We only forward actual NodeStyles instances to draw_mermaid.
+        if isinstance(node_styles, (str, dict, list, tuple)):
+            node_styles = None
 
         mermaid_nodes = _looks_like_mermaid(nodes)
         mermaid_edges = _looks_like_mermaid(edges)
@@ -400,13 +431,23 @@ def make_mermaid_tools(project_dir: str):
             if last_node and last_node not in nodes_obj:
                 nodes_obj[str(last_node)] = str(last_node)
 
-            node_styles_obj = _loads_json_or_yaml(node_styles, None)
+            # Only frontmatter supports JSON/YAML. Node styles must be a real NodeStyles object.
             fm_obj = _loads_json_or_yaml(frontmatter_config, None)
 
             try:
                 cs = CurveStyle[curve_style.upper().strip()]
             except Exception:
                 cs = CurveStyle.LINEAR
+
+            # Safely determine NodeStyles instance (or None)
+            ns = None
+            if _HAS_NODESTYLES and node_styles is not None:
+                try:
+                    from langchain_core.runnables.graph_mermaid import NodeStyles as _NodeStyles  # type: ignore
+                    if isinstance(node_styles, _NodeStyles):
+                        ns = node_styles
+                except Exception:
+                    ns = None
 
             try:
                 syntax = draw_mermaid(
@@ -416,11 +457,26 @@ def make_mermaid_tools(project_dir: str):
                     last_node=last_node,
                     with_styles=with_styles,
                     curve_style=cs,
-                    node_styles=node_styles_obj if _HAS_NODESTYLES else None,
+                    node_styles=ns,  # only a proper NodeStyles or None ever gets through
+                    wrap_label_n_words=wrap_label_n_words,
+                    frontmatter_config=fm_obj,
+                )
+            except AttributeError:
+                # Some langchain-core versions may attempt `.name` on enums/styles;
+                # retry with node_styles disabled.
+                syntax = draw_mermaid(
+                    nodes=nodes_obj,
+                    edges=edges_list,
+                    first_node=first_node,
+                    last_node=last_node,
+                    with_styles=with_styles,
+                    curve_style=cs,
+                    node_styles=None,
                     wrap_label_n_words=wrap_label_n_words,
                     frontmatter_config=fm_obj,
                 )
             except TypeError:
+                # Older signatures without node_styles parameter.
                 syntax = draw_mermaid(
                     nodes=nodes_obj,
                     edges=edges_list,
@@ -453,9 +509,27 @@ def make_mermaid_tools(project_dir: str):
         Render Mermaid syntax to a PNG file inside the repo and return the saved path.
         Accepts fenced blocks; extracts inner Mermaid automatically.
 
+        IMPORTANT SYNTAX RULES (to avoid mmdc/Kroki parse errors):
+        - Always use **valid Mermaid node shapes**:
+            - Rectangle (process):   A[Do something]
+            - Round edges:           A(Rounded step)
+            - Diamond (decision):    A{Yes or No?}
+            - Stadium:               A([Stadium step])
+        - **Do not** use parentheses or braces with raw text like: A{foo(bar)} or A(classify_complexity(query)).
+            Instead, write clean labels like: A{Classify complexity?}
+        - **Do not** wrap edge labels in quotes → use `A -->|simple| B` not `A --> "simple" --> B`.
+        - Keep labels short, no raw punctuation-heavy code inside nodes. For code, rephrase into natural language.
+
         Modes:
-          - env MERMAID_RENDER_MODE=local|api|auto (default auto)
-          - draw_method overrides per-call (LOCAL/API/AUTO)
+        - env MERMAID_RENDER_MODE=local|api|auto (default auto)
+        - draw_method overrides per-call (LOCAL/API/AUTO)
+
+        Rendering priority:
+        1. LOCAL (via Mermaid CLI `mmdc`)
+        2. API fallback (Mermaid.ink, Kroki, etc.)
+        
+        Returns:
+        A message with the relative PNG path + size and source used.
         """
         if not _MERMAID_OK:
             return (
@@ -463,7 +537,6 @@ def make_mermaid_tools(project_dir: str):
                 "Please upgrade `langchain-core` to include `graph_mermaid`."
             )
 
-        # Extract body if fenced
         body = mermaid_syntax or ""
         m = re.search(r"```(?:mermaid)?\s*(.*?)```", body, flags=re.S | re.I)
         if m:
@@ -516,7 +589,6 @@ def make_mermaid_tools(project_dir: str):
         # Try API(s) with retries
         for attempt in range(max_retries):
             try:
-                # Try our improved Mermaid.ink implementation
                 print(f"Trying Mermaid.ink (attempt {attempt + 1}/{max_retries})")
                 png, source = _render_png_via_mermaid_ink(body)
                 return _save_and_report(png, source)
