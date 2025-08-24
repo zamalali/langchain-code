@@ -1,3 +1,9 @@
+<div align="center">
+  <img src="../assets/logo.png" alt="LangCode Logo" width="180" />
+  <h1><b>LangCode</b></h1>
+  <p><b>The only CLI you need.</b></p>
+</div>
+
 # LangCode Documentation
 
 Welcome to the documentation for LangCode, a ReAct + tools code agent CLI.
