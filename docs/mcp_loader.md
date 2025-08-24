@@ -1,3 +1,9 @@
+<div align="center">
+  <img src="../assets/logo.png" alt="LangCode Logo" width="180" />
+  <h1><b>LangCode</b></h1>
+  <p><b>The only CLI you need.</b></p>
+</div>
+
 # MCP Loader
 
 The MCP Loader is responsible for loading and initializing the Multi-Code Pal (MCP) agent. It dynamically loads configurations, tools, and other components to construct the agent at runtime.
