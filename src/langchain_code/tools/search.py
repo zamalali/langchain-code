@@ -13,7 +13,16 @@ def _walk_files(root: Path):
 def make_glob_tool(project_dir: str):
     @tool("glob", return_direct=False)
     def glob(pattern: str) -> str:
-        """Find files by glob pattern (e.g., '**/*.py')."""
+        """
+        Find files in the project by glob pattern.
+
+        Use for locating files when you know part of their name or extension:
+          - `"**/*.py"` → all Python files
+          - `"src/**/*.json"` → JSON files under src/
+          - `"*config*"` → any file with "config" in its name
+
+        Returns up to 500 relative paths, or "(no matches)" if none found.
+        """
         root = Path(project_dir)
         files = [str(p.relative_to(root)) for p in _walk_files(root)
                  if fnmatch.fnmatch(str(p.relative_to(root)), pattern)]
@@ -23,7 +32,19 @@ def make_glob_tool(project_dir: str):
 def make_grep_tool(project_dir: str):
     @tool("grep", return_direct=False)
     def grep(pattern: str, path: str = ".") -> str:
-        """Search for regex pattern in files under path. Returns file:line:match."""
+        """
+        Search for a regex pattern inside files under a directory.
+
+        Use for finding where something is defined or referenced:
+          - `grep("class IntelligentLLMRouter")`
+          - `grep("def get_model", "src/")`
+          - `grep("import re")`
+
+        Returns lines in the form:
+          <file>:<line number>:<matched text>
+
+        Scans up to 500 matches across files. If no matches, returns "(no matches)".
+        """        
         root = Path(project_dir).joinpath(path)
         if not root.exists():
             return f"{path} not found."
