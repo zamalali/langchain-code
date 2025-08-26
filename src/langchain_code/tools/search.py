@@ -1,4 +1,3 @@
-# src/langchain_code/tools/search.py
 from __future__ import annotations
 from pathlib import Path
 import fnmatch
@@ -8,7 +7,6 @@ import time
 from typing import Iterable, List, Optional
 from langchain_core.tools import tool
 
-# --- Tunables / sane defaults ---
 DEFAULT_EXCLUDE_DIRS = {
     ".git", ".hg", ".svn",
     ".venv", "venv", "env",
@@ -18,11 +16,11 @@ DEFAULT_EXCLUDE_DIRS = {
     "dist", "build", "target",
     ".idea", ".vscode", ".gradle",
 }
-DEFAULT_MAX_RESULTS = 500            # max paths returned by glob
-DEFAULT_MAX_MATCHES = 500            # max lines returned by grep
-DEFAULT_MAX_FILES_SCANNED = 5000     # cap on files walked
-DEFAULT_MAX_BYTES_PER_FILE = 2_000_000  # ~2MB: skip very large files
-DEFAULT_TIME_BUDGET_SEC = 8.0        # soft time budget to keep ReAct snappy
+DEFAULT_MAX_RESULTS = 500            
+DEFAULT_MAX_MATCHES = 500            
+DEFAULT_MAX_FILES_SCANNED = 5000     
+DEFAULT_MAX_BYTES_PER_FILE = 2_000_000  
+DEFAULT_TIME_BUDGET_SEC = 8.0        
 
 def _iter_files(
     root: Path,
@@ -44,7 +42,6 @@ def _iter_files(
         try:
             with os.scandir(d) as it:
                 for entry in it:
-                    # time budget
                     if (time.time() - start) > max(0.1, time_budget_sec):
                         return
                     try:
@@ -74,7 +71,6 @@ def _compile_regex(pattern: str, ignore_case: bool) -> re.Pattern:
     try:
         return re.compile(pattern, flags)
     except re.error:
-        # Fallback to literal search if the pattern is invalid
         return re.compile(re.escape(pattern), flags)
 
 def make_glob_tool(project_dir: str):
@@ -179,7 +175,6 @@ def make_grep_tool(project_dir: str):
         for f in _iter_files(root, excludes, max_files_scanned, time_budget_sec):
             scanned += 1
 
-            # Skip very large files outright
             try:
                 if f.stat().st_size > max_bytes_per_file:
                     continue

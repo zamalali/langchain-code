@@ -10,7 +10,6 @@ def _rooted(project_dir: str, path: str) -> Path:
         raise ValueError("Path escapes project_dir")
     return p
 
-# Non-blocking consent gate: never ask for input.
 def _allow(apply: bool, action_desc: str) -> tuple[bool, str]:
     if apply:
         return True, f"apply=True — {action_desc}"
