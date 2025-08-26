@@ -4,23 +4,23 @@ from typing import Optional, Dict, Any, Tuple, List
 import warnings
 import sys
 import os
-import click  # used for fallback editing if no terminal editor
+import click
 import platform
 from collections import OrderedDict
 import shutil
 import subprocess
 import difflib
 from datetime import datetime
+import re
 
-# cross-platform raw key input
 try:
     import termios
     import tty
-except Exception:  # windows
+except Exception:  # pragma: no cover
     termios = None
     tty = None
 try:
-    import msvcrt  # type: ignore
+    import msvcrt  # pragma: no cover
 except Exception:
     msvcrt = None
 
@@ -32,19 +32,16 @@ from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.align import Align
-from rich.columns import Columns
-from rich.table import Table
 from rich import box
 from pyfiglet import Figlet
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-# Silence specific noisy warnings (Pydantic "typing.NotRequired" spam)
 warnings.filterwarnings("ignore", message=r"typing\.NotRequired is not a Python type.*")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pydantic\._internal.*")
 
 # --- router-aware helpers from config ---
-from .config import resolve_provider as _resolve_provider_base
-from .config import get_model, get_model_info
+from .config_core import resolve_provider as _resolve_provider_base
+from .config_core import get_model, get_model_info
 
 from .agent.react import build_react_agent, build_deep_agent
 from .workflows.feature_impl import FEATURE_INSTR
@@ -85,6 +82,7 @@ Custom instructions:
 NEW:
   • Just run `langcode` to open a beautiful interactive launcher.
     Use ↑/↓ to move, ←/→ to change values, Enter to start, h for help, q to quit.
+  • In chat, type /select to return to the launcher without exiting.
 """
 
 app = typer.Typer(add_completion=False, help=APP_HELP.strip())
@@ -93,6 +91,201 @@ PROMPT = "[bold green]langcode[/bold green] [dim]›[/dim] "
 
 _AGENT_CACHE: "OrderedDict[Tuple[str, str, str, str, bool], Any]" = OrderedDict()
 _AGENT_CACHE_MAX = 6
+
+# NEW: tracks whether we're currently inside the selection hub (prevents nesting)
+_IN_SELECTION_HUB = False
+
+# =========================
+# Environment helpers (NEW)
+# =========================
+
+ENV_FILENAMES = (".env", ".env.local")
+
+
+def _parse_env_text(text: str) -> Dict[str, str]:
+    """
+    Minimal .env parser (no external deps).
+    Supports:
+      - KEY=VALUE (unquoted or single/double quoted)
+      - export KEY=VALUE
+      - # comments and blank lines
+      - \n and \t escapes in values
+    """
+    env: Dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip()
+        if (len(val) >= 2) and ((val[0] == val[-1]) and val[0] in ('"', "'")):
+            val = val[1:-1]
+        # unescape simple sequences
+        val = val.replace("\\n", "\n").replace("\\t", "\t")
+        if key:
+            env[key] = val
+    return env
+
+
+def _load_env_file(path: Path, override_existing: bool = False) -> List[str]:
+    """
+    Load env vars from a single file into os.environ.
+    Returns list of keys set/updated.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    parsed = _parse_env_text(text)
+    applied: List[str] = []
+    for k, v in parsed.items():
+        if override_existing or (k not in os.environ):
+            os.environ[k] = v
+            applied.append(k)
+    return applied
+
+
+def _load_env_files(project_dir: Path, *, override_existing: bool = False) -> Dict[str, Any]:
+    """
+    Load .env + .env.local (if present) from project_dir.
+    Precedence: .env then .env.local (later overrides if override_existing=True).
+    Returns dict with status info.
+    """
+    project_dir = project_dir.resolve()
+    files = [project_dir / name for name in ENV_FILENAMES]
+    existing = [p for p in files if p.exists()]
+    applied_keys: List[str] = []
+    for p in existing:
+        applied_keys.extend(_load_env_file(p, override_existing=override_existing))
+    return {
+        "project_dir": str(project_dir),
+        "files_found": [str(p) for p in existing],
+        "applied_keys": applied_keys,
+    }
+
+
+def _count_env_keys_in_file(path: Path) -> int:
+    try:
+        txt = path.read_text(encoding="utf-8")
+    except Exception:
+        return 0
+    return len(_parse_env_text(txt))
+
+
+def _env_status_label(project_dir: Path) -> str:
+    """
+    Build a short status line for the launcher.
+    """
+    p_env = project_dir / ".env"
+    p_local = project_dir / ".env.local"
+    have_env = p_env.exists()
+    have_local = p_local.exists()
+    parts = []
+    if have_env:
+        parts.append(f".env:{_count_env_keys_in_file(p_env)}")
+    if have_local:
+        parts.append(f".env.local:{_count_env_keys_in_file(p_local)}")
+    if parts:
+        return "edit…  (" + ", ".join(parts) + ")"
+    return "create…  (.env)"
+
+
+def _ensure_env_file(project_dir: Path) -> Path:
+    """
+    Ensure .env exists in project_dir (create with helpful template if missing).
+    """
+    path = (project_dir / ".env")
+    if not path.exists():
+        template = f"""# .env — environment for LangCode
+# Fill only what you need; keep secrets safe.
+# Examples:
+# OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY=...
+# GOOGLE_API_KEY=...
+# GEMINI_API_KEY=...
+# LANGCHAIN_API_KEY=...
+# LANGCHAIN_TRACING_V2=true
+# LANGCHAIN_PROJECT=langcode
+
+# Created {datetime.now().strftime('%Y-%m-%d %H:%M')} by LangCode
+"""
+        path.write_text(template, encoding="utf-8")
+    return path
+
+
+def _edit_env_file(project_dir: Path) -> None:
+    """
+    Open .env in a terminal editor (Vim-first) or inline capture.
+    Show short stats after save.
+    """
+    md_path = _ensure_env_file(project_dir)
+    original = md_path.read_text(encoding="utf-8")
+
+    launched = _open_in_terminal_editor(md_path)
+    edited_text: Optional[str] = None
+
+    if not launched:
+        edited_text = click.edit(original, require_save=False)
+        if edited_text is None:
+            edited_text = _inline_capture_editor(original)
+        if edited_text is not None and edited_text != original:
+            md_path.write_text(edited_text, encoding="utf-8")
+    else:
+        edited_text = md_path.read_text(encoding="utf-8")
+
+    if edited_text is None:
+        console.print(Panel.fit(Text("No changes saved.", style="yellow"), border_style="yellow"))
+        return
+    if edited_text == original:
+        console.print(Panel.fit(Text("No changes saved (file unchanged).", style="yellow"), border_style="yellow"))
+        return
+
+    stats = _diff_stats(original, edited_text)
+    console.print(Panel.fit(
+        Text.from_markup(
+            f"Saved [bold]{md_path}[/bold]\n"
+            f"[green]+{stats['added']}[/green] / [red]-{stats['removed']}[/red] • total {stats['total_after']} lines"
+        ),
+        border_style="green"
+    ))
+
+
+def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = True) -> None:
+    """
+    Load env from project_dir; if no .env / .env.local, optionally offer to create one inline.
+    Called at startup and at each command entry.
+    """
+    info = _load_env_files(project_dir, override_existing=False)
+    if info["files_found"]:
+        return  # Already loaded something
+
+    if not interactive_prompt_if_missing:
+        return
+
+    # Offer to create .env now so user never leaves terminal
+    console.print(Panel.fit(
+        Text.from_markup(
+            f"No [bold].env[/bold] found in [bold]{project_dir}[/bold].\n"
+            "Create one now to set your API keys and configuration?"
+        ),
+        title="Environment",
+        border_style="cyan",
+        box=box.ROUNDED,
+    ))
+    answer = console.input("[bold]Create .env now?[/bold] [Y/n]: ").strip().lower()
+    if answer in ("", "y", "yes"):
+        _edit_env_file(project_dir)
+        # Load immediately after creation
+        _load_env_files(project_dir, override_existing=False)
+        console.print(Panel.fit(Text("Environment loaded from .env.", style="green"), border_style="green"))
+    else:
+        console.print(Text("Continuing without .env. You can add it later from the launcher → Environment.", style="dim"))
+
 
 def _agent_cache_get(key: Tuple[str, str, str, str, bool]):
     if key in _AGENT_CACHE:
@@ -185,17 +378,17 @@ def _pick_terminal_editor() -> Optional[List[str]]:
     """
     if os.environ.get("LANGCODE_EDITOR"):
         return os.environ["LANGCODE_EDITOR"].split()
-    
+
     for var in ("VISUAL", "EDITOR"):
         v = os.environ.get(var)
         if v:
             return v.split()
-    
+
     # Check PATH first
     for cand in ("nvim", "vim", "vi", "nano"):
         if shutil.which(cand):
             return [cand]
-    
+
     # Windows-specific: check common Vim installation paths
     if platform.system().lower() == "windows":
         common_vim_paths = [
@@ -209,11 +402,11 @@ def _pick_terminal_editor() -> Optional[List[str]]:
             r"C:\tools\vim\vim90\vim.exe",
             r"C:\Users\{}\scoop\apps\vim\current\vim.exe".format(os.environ.get("USERNAME", "")),  # Scoop
         ]
-        
+
         for vim_path in common_vim_paths:
             if os.path.exists(vim_path):
                 return [vim_path]
-                
+
         # Also check if 'vim.exe' is in PATH but not found by shutil.which
         try:
             result = subprocess.run(["where", "vim"], capture_output=True, text=True, check=False)
@@ -223,7 +416,7 @@ def _pick_terminal_editor() -> Optional[List[str]]:
                     return [vim_exe]
         except Exception:
             pass
-    
+
     return None
 
 
@@ -235,7 +428,7 @@ def _open_in_terminal_editor(file_path: Path) -> bool:
     cmd = _pick_terminal_editor()
     if not cmd:
         return False
-    
+
     try:
         # On Windows, we might need to handle the console properly
         if platform.system().lower() == "windows":
@@ -399,7 +592,8 @@ def session_banner(
 
     if interactive:
         body.append("\n\n")
-        body.append("Type your request. /clear to redraw, /exit or /quit to quit. Ctrl+C also exits.\n", style="dim")
+        # UPDATED: mention /select
+        body.append("Type your request. /clear to redraw, /select to change mode, /exit or /quit to quit. Ctrl+C also exits.\n", style="dim")
 
     if tips:
         body.append("\n")
@@ -444,9 +638,50 @@ def _print_session_header(
     )
     console.print(Rule(style="green"))
 
+def _looks_like_markdown(text: str) -> bool:
+    """Heuristic: decide if the model output is Markdown."""
+    if "```" in text:
+        return True
+    # headings like "#", "##", etc.
+    if re.search(r"(?m)^\s{0,3}#{1,6}\s", text):
+        return True
+    # unordered lists: -, *, +
+    if re.search(r"(?m)^\s{0,3}[-*+]\s+", text):
+        return True
+    # ordered lists: 1. 2. ...
+    if re.search(r"(?m)^\s{0,3}\d+\.\s+", text):
+        return True
+    # inline code or emphasis/bold
+    if re.search(r"`[^`]+`", text) or re.search(r"\*\*[^*]+\*\*", text):
+        return True
+    return False
+
+
 def _panel_agent_output(text: str, title: str = "Agent") -> Panel:
-    body = Markdown(text) if ("```" in text or "\n#" in text) else Text(text)
-    return Panel.fit(body, title=title, border_style="cyan", box=box.ROUNDED, padding=(0, 1))
+    """
+    Render agent output full-width, with clean wrapping and proper Markdown
+    when appropriate. This avoids the 'half-cut' panel look.
+    """
+    text = (text or "").rstrip()
+
+    if _looks_like_markdown(text):
+        body = Markdown(text)  # Rich will wrap Markdown nicely
+    else:
+        t = Text.from_ansi(text) if "\x1b[" in text else Text(text)
+        # ensure long tokens (e.g., URLs) don't blow out the width
+        t.no_wrap = False
+        t.overflow = "fold"
+        body = t
+
+    # Use expand=True instead of Panel.fit(...) so the panel spans the console width
+    return Panel(
+        body,
+        title=title,
+        border_style="cyan",
+        box=box.ROUNDED,
+        padding=(1, 2),
+        expand=True,    # <<< key change: full-width panel; looks polished
+    )
 
 def _panel_router_choice(info: Dict[str, Any]) -> Panel:
     if not info:
@@ -634,6 +869,7 @@ def _info_panel_for(field: str) -> Panel:
         "LLM": "[bold]LLM provider[/bold]: Explicitly force [cyan]anthropic[/cyan] or [cyan]gemini[/cyan]. Leave blank to follow router/defaults.",
         "Project": "[bold]Project directory[/bold]: Where the agent operates.",
         "Custom Instructions": "[bold].langcode/langcode.md[/bold]: Project-specific instructions appended to the base prompt. Press Enter to open Vim (or $VISUAL/$EDITOR). Exit with :wq. A shortstat will be shown.",
+        "Environment": "[bold].env[/bold]: Create/edit env vars (API keys, config) right here. We'll auto-load from .env / .env.local. If none exists, you can create one inline.",
         "Tests": "[bold]Test command[/bold]: e.g. [cyan]pytest -q[/cyan] or [cyan]npm test[/cyan]. Used by feature/fix flows.",
         "Start": "[bold]Enter[/bold] to launch with the current configuration.",
         "Help": "[bold]h[/bold] to toggle help, [bold]q[/bold] or [bold]Esc[/bold] to quit.",
@@ -642,13 +878,116 @@ def _info_panel_for(field: str) -> Panel:
     return Panel(Text.from_markup(text), title="Info", border_style="green", box=box.ROUNDED)
 
 def _help_content() -> Panel:
+    """
+    LangCode-themed, compact help with bright tints on keywords only.
+    - Outer frame: green + HEAVY (matches banner)
+    - Inner cards: cyan borders
+    - Commands / flags / keys: bright shaded colors
+    - Descriptions: plain white for readability
+    """
+    from rich.table import Table
+    from rich.columns import Columns
+
+    # --- small helpers -------------------------------------------------------
+    def shade(token: str, color: str) -> Text:
+        return Text(token, style=f"bold {color}")
+
+    def opts_card(title: str, rows: list[tuple[str, str]], palette: list[str]) -> Panel:
+        t = Table.grid(padding=(0, 2))
+        t.add_column("Flag", justify="right", no_wrap=True)
+        t.add_column("Description", style="white")
+        for i, (flag, desc) in enumerate(rows):
+            t.add_row(shade(flag, palette[i % len(palette)]), desc)
+        return Panel(t, title=title, border_style="cyan", box=box.ROUNDED, padding=(1, 1), expand=True)
+
+    # Palettes stay in the LangCode family (green/teal/cyan/blue).
+    p_cmd  = ["#22c55e", "#10b981", "#06b6d4", "#3b82f6", "#67e8f9"]    
+    p_glob = ["#7dd3fc", "#22d3ee", "#06b6d4", "#60a5fa", "#34d399"]     
+    p_chat = ["#bbf7d0", "#34d399", "#10b981", "#059669"]               
+    p_fx   = ["#93c5fd", "#60a5fa", "#3b82f6"]                           
+    p_key  = ["#22c55e", "#06b6d4", "#67e8f9", "#34d399", "#60a5fa"]   
+
+    cmd_tbl = Table.grid(padding=(0, 2))
+    cmd_tbl.add_column("Command", no_wrap=True)
+    cmd_tbl.add_column("What it does", style="white")
+    cmd_rows = [
+        ("chat",    "Interactive agent chat. --mode {react|deep}. Deep supports --auto."),
+        ("feature", "Plan → edit → verify a feature. Use --apply and --test-cmd to run tests."),
+        ("fix",     "Diagnose & patch from logs. Accepts --log. Supports --apply and --test-cmd."),
+        ("analyze", "Deep repo insights (LangGraph). Great for overviews & architecture questions."),
+        ("instructions",   "Open or create .langcode/langcode.md (project rules/instructions)."),
+    ]
+    for i, (name, desc) in enumerate(cmd_rows):
+        cmd_tbl.add_row(shade(name, p_cmd[i % len(p_cmd)]), desc)
+    cmds = Panel(cmd_tbl, title="Commands", border_style="cyan", box=box.ROUNDED, padding=(1, 1), expand=True)
+
+    global_opts = opts_card("Global options", [
+        ("--llm",              "Force provider (anthropic | gemini)."),
+        ("--router",           "Smart model routing per prompt."),
+        ("--priority",         "balanced | cost | speed | quality (default: balanced)."),
+        ("--verbose",          "Show model-selection panel when routing."),
+        ("--project-dir PATH", "Set working directory (default: current)."),
+    ], p_glob)
+
+    chat_opts = opts_card("Chat options", [
+        ("--mode", "Reasoning engine: react (default) | deep."),
+        ("--auto", "Deep-mode autopilot: plan+act without questions."),
+    ], p_chat)
+
+    fx_opts = opts_card("Feature / Fix options", [
+        ("--apply",                  "Allow edits & run commands (otherwise propose only)."),
+        ('--test-cmd "pytest -q"',   "Command to verify changes."),
+        ("--log PATH",               "Fix only: path to error log / stack trace."),
+    ], p_fx)
+
+    keys_tbl = Table.grid(padding=(0, 2))
+    keys_tbl.add_column("Key / Command", justify="right", no_wrap=True)
+    keys_tbl.add_column("Action", style="white")
+    shortcuts = [
+        ("h",            "Toggle this help."),
+        ("q / Esc",      "Quit launcher."),
+        ("/clear",       "Clear chat screen."),
+        ("/select",      "Return to launcher from chat."),
+        ("/exit or /quit","Leave chat."),
+    ]
+    for i, (k, desc) in enumerate(shortcuts):
+        keys_tbl.add_row(shade(k, p_key[i % len(p_key)]), desc)
+    keys = Panel(keys_tbl, title="Shortcuts", border_style="cyan", box=box.ROUNDED, padding=(1, 1), expand=True)
+
+    cfg_tbl = Table.grid(padding=(0, 2))
+    cfg_tbl.add_column(style="white")
+    line1 = Text("• Environment keys live in ")
+    line1.append(".env", style="bold #06b6d4")
+    line1.append(" / ")
+    line1.append(".env.local", style="bold #67e8f9")
+    line1.append(" (edited from “Environment” in the launcher).")
+    line2 = Text("• Project rules live in ")
+    line2.append(".langcode/langcode.md", style="bold #22c55e")
+    line2.append(" (edited from “Custom Instructions”).")
+    cfg_tbl.add_row(line1)
+    cfg_tbl.add_row(line2)
+    cfg = Panel(cfg_tbl, title="Config & files", border_style="cyan", box=box.ROUNDED, padding=(1, 1), expand=True)
+
+    body = Group(
+        Align.center(Text("Quick Reference", style="bold")),
+        cmds,
+        Rule(style="green"),
+        Columns([global_opts, chat_opts, fx_opts], expand=True, equal=True),
+        Rule(style="green"),
+        Columns([keys, cfg], expand=True, equal=True),
+    )
+
     return Panel(
-        Markdown(APP_HELP.strip()),
+        body,
         title="LangCode Help",
-        border_style="magenta",
+        border_style="green",
         box=box.HEAVY,
         padding=(1, 2),
+        expand=True,
     )
+
+
+
 
 def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = False) -> None:
     console.clear()
@@ -660,7 +999,6 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
 
     rows = []
 
-    # Build display values
     cmd_val = state["command"]
     engine_val = state["engine"]
     router_val = "on" if state["router"] else "off"
@@ -673,7 +1011,6 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
     proj_val = str(state["project_dir"])
     tests_val = state["test_cmd"] or "(none)"
 
-    # Custom instructions status
     md_path = (state["project_dir"] / LANGCODE_DIRNAME / LANGCODE_FILENAME)
     if md_path.exists():
         try:
@@ -685,6 +1022,8 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
     else:
         instr_val = f"create…  ({LANGCODE_DIRNAME}/{LANGCODE_FILENAME})"
 
+    env_val = _env_status_label(state["project_dir"])
+
     labels = [
         ("Command", cmd_val, True),
         ("Engine", engine_val, True),
@@ -694,6 +1033,7 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
         ("Apply", apply_val, apply_enabled),
         ("LLM", llm_val, True),
         ("Project", proj_val, True),
+        ("Environment", env_val, True),  # NEW
         ("Custom Instructions", instr_val, True),
         ("Tests", tests_val, state["command"] in ("feature", "fix")),
         ("Start", "Press Enter", True),
@@ -712,8 +1052,6 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
 
     right_panel = _info_panel_for(labels[focus_index][0])
 
-    # main = Columns([left_panel, right_panel], expand=True, equal=True)
-    # console.print(main)
     console.print(Group(left_panel, right_panel))
 
     footer_items = [
@@ -734,7 +1072,7 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     show_help = False
     fields_order = [
         "Command", "Engine", "Router", "Priority", "Autopilot", "Apply",
-        "LLM", "Project", "Custom Instructions", "Tests", "Start"
+        "LLM", "Project", "Environment", "Custom Instructions", "Tests", "Start"
     ]
 
     def toggle(field: str, direction: int) -> None:
@@ -755,21 +1093,17 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             i = (opts.index(state["priority"]) + direction) % len(opts)
             state["priority"] = opts[i]
         elif field == "Autopilot":
-            # only applicable for deep chat
             if state["command"] == "chat" and state["engine"] == "deep":
                 state["autopilot"] = not state["autopilot"]
         elif field == "Apply":
-            # only for feature/fix
             if state["command"] in ("feature", "fix"):
                 state["apply"] = not state["apply"]
         elif field == "LLM":
-            # cycle: (auto) -> anthropic -> gemini -> (auto)
             opts = [None, "anthropic", "gemini"]
             cur = state["llm"]
             i = (opts.index(cur) + direction) % len(opts)
             state["llm"] = opts[i]
         elif field == "Project":
-            # prompt for path
             path = console.input("[bold]Project directory[/bold] (Enter to keep current): ").strip()
             if path:
                 p = Path(path).expanduser().resolve()
@@ -778,6 +1112,12 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 else:
                     console.print(Panel.fit(Text(f"Invalid directory: {p}", style="bold red"), border_style="red"))
                     console.input("Press Enter to continue...")
+        elif field == "Environment":
+            try:
+                _edit_env_file(state["project_dir"])
+                _load_env_files(state["project_dir"], override_existing=False)
+            except Exception as e:
+                console.print(Panel.fit(Text(f"Failed to edit environment: {e}", style="bold red"), border_style="red"))
         elif field == "Custom Instructions":
             try:
                 _edit_langcode_md(state["project_dir"])
@@ -811,101 +1151,128 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             continue
         if key == _Key.ENTER:
             field = fields_order[focus_index]
-            if field in ("Project", "Custom Instructions", "Tests"):
-                # Enter acts like edit for these fields
+            if field in ("Project", "Environment", "Custom Instructions", "Tests"):
                 toggle(field, +1)
                 continue
             if field == "Start":
                 return state
-            # For toggles and cycling fields, Enter also advances
             toggle(field, +1)
             continue
 
-# =========================
-# Root callback
-# =========================
+
+def _default_state() -> Dict[str, Any]:
+    return {
+        "command": "chat",
+        "engine": "react",
+        "router": False,
+        "priority": "balanced",
+        "autopilot": False,
+        "apply": False,  
+        "llm": None,    
+        "project_dir": Path.cwd(),
+        "test_cmd": None,
+    }
+
+def _dispatch_from_state(chosen: Dict[str, Any]) -> Optional[str]:
+    """
+    Dispatch to the appropriate command based on chosen launcher state.
+    Returns:
+      - "quit" if the invoked sub-flow indicated a full exit
+      - "select" to return to launcher
+      - None to simply continue
+    """
+    cmd = chosen["command"]
+    if cmd == "chat":
+        return chat(
+            llm=chosen["llm"],
+            project_dir=chosen["project_dir"],
+            mode=chosen["engine"],
+            auto=bool(chosen["autopilot"] and chosen["engine"] == "deep"),
+            router=chosen["router"],
+            priority=chosen["priority"],
+            verbose=False,
+        )
+    elif cmd == "feature":
+        req = console.input("[bold]Feature request[/bold] (e.g. Add a dark mode toggle): ").strip()
+        if not req:
+            console.print("[yellow]Aborted: no request provided.[/yellow]")
+            return None
+        feature(
+            request=req,
+            llm=chosen["llm"],
+            project_dir=chosen["project_dir"],
+            test_cmd=chosen["test_cmd"],
+            apply=chosen["apply"],
+            router=chosen["router"],
+            priority=chosen["priority"],
+            verbose=False,
+        )
+        return None
+    elif cmd == "fix":
+        req = console.input("[bold]Bug summary[/bold] (e.g. Fix crash on image upload) [Enter to skip]: ").strip() or None
+        log_path = console.input("[bold]Path to error log[/bold] [Enter to skip]: ").strip()
+        log = Path(log_path) if log_path else None
+        fix(
+            request=req,
+            log=log if log and log.exists() else None,
+            llm=chosen["llm"],
+            project_dir=chosen["project_dir"],
+            test_cmd=chosen["test_cmd"],
+            apply=chosen["apply"],
+            router=chosen["router"],
+            priority=chosen["priority"],
+            verbose=False,
+        )
+        return None
+    else: 
+        req = console.input("[bold]Analysis question[/bold] (e.g. What are the main components?): ").strip()
+        if not req:
+            console.print("[yellow]Aborted: no question provided.[/yellow]")
+            return None
+        analyze(
+            request=req,
+            llm=chosen["llm"],
+            project_dir=chosen["project_dir"],
+            router=chosen["router"],
+            priority=chosen["priority"],
+            verbose=False,
+        )
+        return None
+
+def _selection_hub(initial_state: Optional[Dict[str, Any]] = None) -> None:
+    """
+    Persistent launcher loop so users can switch modes without restarting the CLI.
+    """
+    global _IN_SELECTION_HUB
+    state = dict(initial_state or _default_state())
+
+    try:
+        _bootstrap_env(state["project_dir"], interactive_prompt_if_missing=True)
+    except Exception:
+        pass
+
+    _IN_SELECTION_HUB = True
+    try:
+        while True:
+            chosen = _launcher_loop(state)
+            if not chosen:
+                console.print("\n[bold]Goodbye![/bold]")
+                return
+            state.update(chosen)
+            outcome = _dispatch_from_state(chosen)
+            if outcome == "quit":
+                console.print("\n[bold]Goodbye![/bold]")
+                return
+    finally:
+        _IN_SELECTION_HUB = False
+
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
+    # If invoked bare (no subcommand), run the selection hub (persistent)
     if ctx.invoked_subcommand is None:
-        # Interactive launcher on bare `langcode`
-        default_state = {
-            "command": "chat",
-            "engine": "react",
-            "router": False,
-            "priority": "balanced",
-            "autopilot": False,
-            "apply": False,  # diff-only unless turned on for feature/fix
-            "llm": None,     # None | "anthropic" | "gemini"
-            "project_dir": Path.cwd(),
-            "test_cmd": None,
-        }
-        chosen = _launcher_loop(default_state)
-        if not chosen:
-            console.print("\n[bold]Goodbye![/bold]")
-            raise typer.Exit()
-
-        # Route to the selected command
-        cmd = chosen["command"]
-        if cmd == "chat":
-            chat(
-                llm=chosen["llm"],
-                project_dir=chosen["project_dir"],
-                mode=chosen["engine"],
-                auto=bool(chosen["autopilot"] and chosen["engine"] == "deep"),
-                router=chosen["router"],
-                priority=chosen["priority"],
-                verbose=False,
-            )
-        elif cmd == "feature":
-            # Ask for a one-liner request
-            req = console.input("[bold]Feature request[/bold] (e.g. Add a dark mode toggle): ").strip()
-            if not req:
-                console.print("[yellow]Aborted: no request provided.[/yellow]")
-                raise typer.Exit()
-            feature(
-                request=req,
-                llm=chosen["llm"],
-                project_dir=chosen["project_dir"],
-                test_cmd=chosen["test_cmd"],
-                apply=chosen["apply"],
-                router=chosen["router"],
-                priority=chosen["priority"],
-                verbose=False,
-            )
-        elif cmd == "fix":
-            # Ask for a one-liner or load a log
-            req = console.input("[bold]Bug summary[/bold] (e.g. Fix crash on image upload) [Enter to skip]: ").strip() or None
-            log_path = console.input("[bold]Path to error log[/bold] [Enter to skip]: ").strip()
-            log = Path(log_path) if log_path else None
-            fix(
-                request=req,
-                log=log if log and log.exists() else None,
-                llm=chosen["llm"],
-                project_dir=chosen["project_dir"],
-                test_cmd=chosen["test_cmd"],
-                apply=chosen["apply"],
-                router=chosen["router"],
-                priority=chosen["priority"],
-                verbose=False,
-            )
-        else:  # analyze
-            req = console.input("[bold]Analysis question[/bold] (e.g. What are the main components?): ").strip()
-            if not req:
-                console.print("[yellow]Aborted: no question provided.[/yellow]")
-                raise typer.Exit()
-            analyze(
-                request=req,
-                llm=chosen["llm"],
-                project_dir=chosen["project_dir"],
-                router=chosen["router"],
-                priority=chosen["priority"],
-                verbose=False,
-            )
+        _selection_hub(_default_state())
         raise typer.Exit()
 
-# =========================
-# Commands
-# =========================
 @app.command(help="Open an interactive chat with the agent. Modes: react | deep (default: react). Use --auto in deep mode for full autopilot (plan+act with no questions).")
 def chat(
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
@@ -915,7 +1282,16 @@ def chat(
     router: bool = typer.Option(False, "--router", help="Auto-route to the most efficient LLM per query."),
     priority: str = typer.Option("balanced", "--priority", help="Router priority: balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panels."),
-):
+) -> Optional[str]:
+    """
+    Returns:
+      - "quit": user explicitly exited chat; caller should terminate program
+      - "select": user requested to return to launcher
+      - None: normal return (caller may continue)
+    """
+    # Ensure env for this project
+    _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
+
     priority = (priority or "balanced").lower()
     if priority not in {"balanced", "cost", "speed", "quality"}:
         priority = "balanced"
@@ -930,10 +1306,8 @@ def chat(
         session_title += " (Auto)"
     _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
 
-    history: list = []  # for ReAct
-    msgs: list = []     # for Deep
-
-    # Static agent only when router is off
+    history: list = []  
+    msgs: list = []     
     static_agent = None
     if not router:
         if mode == "deep":
@@ -956,13 +1330,32 @@ def chat(
                 history.clear()
                 msgs.clear()
                 continue
+            if low in {"select", "/select", "/menu", ":menu"}:
+                console.print("[cyan]Returning to launcher…[/cyan]")
+                if _IN_SELECTION_HUB:
+                    return "select"
+                _selection_hub({
+                    "command": "chat",
+                    "engine": mode,
+                    "router": router,
+                    "priority": priority,
+                    "autopilot": bool(auto),
+                    "apply": False,
+                    "llm": llm,
+                    "project_dir": project_dir,
+                    "test_cmd": None,
+                })
+                return "quit"
             if low in {"exit", "quit", ":q", "/exit", "/quit"}:
-                console.print("\n[bold]Goodbye![/bold]")
-                break
+                return "quit"
 
             coerced = _maybe_coerce_img_command(user)
 
-            # Show spinner immediately for zero perceived latency
+            # Collect panels to print AFTER the spinner finishes
+            pending_router_panel: Optional[Panel] = None
+            pending_output_panel: Optional[Panel] = None
+            react_history_update: Optional[Tuple[HumanMessage, AIMessage]] = None
+
             with _show_loader():
                 agent = static_agent
                 model_info = None
@@ -986,7 +1379,7 @@ def chat(
                         agent = cached
                     else:
                         if verbose and model_info:
-                            console.print(_panel_router_choice(model_info))
+                            pending_router_panel = _panel_router_choice(model_info)
                         if mode == "deep":
                             seed = AUTO_DEEP_INSTR if auto else None
                             agent = _build_deep_agent_with_optional_llm(
@@ -1017,36 +1410,35 @@ def chat(
                         })
 
                     config = {"configurable": {"recursion_limit": prio_limits.get(priority, 45)}}
+                    output: str = ""
                     try:
                         res = agent.invoke({"messages": msgs}, config=config)
                         if isinstance(res, dict) and "messages" in res:
                             msgs = res["messages"]
                         else:
-                            console.print(_panel_agent_output("Error: Invalid response format from agent"))
-                            continue
+                            output = "Error: Invalid response format from agent."
                     except Exception as e:
-                        if "recursion" in str(e).lower():
-                            console.print(_panel_agent_output(f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"))
-                        else:
-                            console.print(_panel_agent_output(f"Agent error: {e}"))
-                        continue
+                        output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
+                                  if "recursion" in str(e).lower()
+                                  else f"Agent error: {e}")
 
-                    last_content = _extract_last_content(msgs).strip()
-                    if not last_content:
-                        msgs.append({
-                            "role": "system",
-                            "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
-                        })
-                        try:
-                            res = agent.invoke({"messages": msgs}, config=config)
-                            if isinstance(res, dict) and "messages" in res:
-                                msgs = res["messages"]
-                            last_content = _extract_last_content(msgs).strip()
-                        except Exception as e:
-                            last_content = f"Agent failed after retry: {e}"
+                    if not output:
+                        last_content = _extract_last_content(msgs).strip()
+                        if not last_content:
+                            msgs.append({
+                                "role": "system",
+                                "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
+                            })
+                            try:
+                                res = agent.invoke({"messages": msgs}, config=config)
+                                if isinstance(res, dict) and "messages" in res:
+                                    msgs = res["messages"]
+                                last_content = _extract_last_content(msgs).strip()
+                            except Exception as e:
+                                last_content = f"Agent failed after retry: {e}"
+                        output = last_content or "No response generated."
 
-                    output = last_content or "No response generated."
-                    console.print(_panel_agent_output(output))
+                    pending_output_panel = _panel_agent_output(output)
 
                 else:
                     # ReAct mode
@@ -1066,19 +1458,27 @@ def chat(
                                 output = "Model returned empty output. Recent steps:\n" + "\n".join(previews)
                             else:
                                 output = "No response generated. Try rephrasing your request."
-
-                        console.print(_panel_agent_output(output))
-                        history.append(HumanMessage(content=coerced))
-                        history.append(AIMessage(content=output))
-                        # keep history small for speed and cost
-                        if len(history) > 20:
-                            history[:] = history[-20:]
-
                     except Exception as e:
-                        console.print(_panel_agent_output(f"ReAct agent error: {e}"))
+                        output = f"ReAct agent error: {e}"
+
+                    pending_output_panel = _panel_agent_output(output)
+                    react_history_update = (HumanMessage(content=coerced), AIMessage(content=output))
+
+            if pending_router_panel:
+                console.print(pending_router_panel)
+            if pending_output_panel:
+                console.print(pending_output_panel)
+
+            if react_history_update:
+                human_msg, ai_msg = react_history_update
+                history.append(human_msg)
+                history.append(ai_msg)
+                if len(history) > 20:
+                    history[:] = history[-20:]
 
     except (KeyboardInterrupt, EOFError):
         console.print("\n[bold]Goodbye![/bold]")
+        return "quit"
 
 @app.command(help="Implement a feature end-to-end (plan → search → edit → verify). Supports --apply and optional --test-cmd (e.g., 'pytest -q').")
 def feature(
@@ -1091,6 +1491,9 @@ def feature(
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panel."),
 ):
+    # Ensure env for this project
+    _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
+
     priority = (priority or "balanced").lower()
     if priority not in {"balanced", "cost", "speed", "quality"}:
         priority = "balanced"
@@ -1150,6 +1553,9 @@ def fix(
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panel."),
 ):
+    # Ensure env for this project
+    _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
+
     priority = (priority or "balanced").lower()
     if priority not in {"balanced", "cost", "speed", "quality"}:
         priority = "balanced"
@@ -1210,6 +1616,9 @@ def analyze(
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panel."),
 ):
+    # Ensure env for this project
+    _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
+
     priority = (priority or "balanced").lower()
     if priority not in {"balanced", "cost", "speed", "quality"}:
         priority = "balanced"

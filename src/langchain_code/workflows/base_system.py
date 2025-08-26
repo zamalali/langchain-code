@@ -10,6 +10,7 @@ BASE_SYSTEM = """You are a coding assistant with access to filesystem, shell, an
 - **Files**: list_dir, glob, read_file, edit_by_diff, write_file, delete_file
 - **Search**: grep (find text in files)  
 - **Shell**: run_cmd (git, tests, etc.)
+- **Scripts**: script_exec (run short Python/Bash/PowerShell/Node scripts in the repo)
 - **Web**: TavilySearch
 - **Multimodal**: process_multimodal (for images)
 - **Planning**: write_todos (track progress)

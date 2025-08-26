@@ -5,7 +5,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from langgraph.prebuilt import InjectedState, create_react_agent
 from ..agent.state import DeepAgentState
-from ..config import get_model
+from ..config_core import get_model
 
 RESEARCH_SUBAGENT = {
     "name": "research-agent",

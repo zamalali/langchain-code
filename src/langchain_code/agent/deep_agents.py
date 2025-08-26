@@ -1,27 +1,34 @@
 from __future__ import annotations
-from typing import Optional, List, Union, Any
+
+import asyncio
+import os
 from pathlib import Path
+from typing import Any, List, Optional, Union
+
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import Checkpointer
 from langchain_core.tools import BaseTool
+
 from ..agent.state import DeepAgentState
-from ..agent.subagents import create_task_tool, SubAgent
-from ..tools.planner import write_todos
-from ..workflows.base_system import BASE_SYSTEM
-from ..config import get_model
-from ..tools.fs_local import make_list_dir_tool, make_read_file_tool, make_write_file_tool, make_edit_by_diff_tool, make_delete_file_tool
-from ..tools.search import make_glob_tool, make_grep_tool
-from ..tools.shell import make_run_cmd_tool
-from ..tools.processor import make_process_multimodal_tool
-from ..tools.mermaid import make_mermaid_tools
+from ..agent.subagents import SubAgent, create_task_tool
+from ..config_core import get_model
 from ..mcp_loader import get_mcp_tools
-import asyncio
+from ..tools.fs_local import (
+    make_delete_file_tool,
+    make_edit_by_diff_tool,
+    make_list_dir_tool,
+    make_read_file_tool,
+    make_write_file_tool,
+)
+from ..tools.mermaid import make_mermaid_tools
+from ..tools.planner import write_todos
+from ..tools.processor import make_process_multimodal_tool
+from ..tools.shell import make_run_cmd_tool
+from ..tools.script_exec import make_script_exec_tool
+from ..tools.search import make_glob_tool, make_grep_tool
+from ..workflows.base_system import BASE_SYSTEM
 
 def load_langcode_context(project_dir: Path) -> str:
-    """
-    Load project-specific instructions from .langcode/langcode.md
-    located at the project root. Returns empty string if not found.
-    """
     ctx_file = project_dir / ".langcode" / "langcode.md"
     if ctx_file.exists():
         try:
@@ -55,14 +62,31 @@ async def _load_dynamic_tools(project_dir: Path, model, apply: bool, test_cmd: O
         make_write_file_tool(str(project_dir), apply),
         make_delete_file_tool(str(project_dir), apply),
         make_run_cmd_tool(str(project_dir), apply, test_cmd),
+        make_script_exec_tool(str(project_dir), apply),
         make_process_multimodal_tool(str(project_dir), model),
         write_todos,
     ]
-    tools.extend(await get_mcp_tools())
-    if TavilySearch:
-        tools.append(TavilySearch(max_results=5, topic="general"))
+    tools.extend(await get_mcp_tools(project_dir))
+
+    if TavilySearch and os.getenv("TAVILY_API_KEY"):
+        try:
+            tools.append(
+                TavilySearch(
+                    max_results=5,
+                    topic="general",
+                    description=(
+                        "Use TavilySearch for internet or websearch to answer questions "
+                        "that require up-to-date information from the web. "
+                        "Best for research, current events, general knowledge, news etc."
+                    ),
+                )
+            )
+        except Exception as e:
+            print(f"[LangCode] Tavily disabled (reason: {e})")
+
     tools.extend(make_mermaid_tools(str(project_dir)))
     return tools
+
 
 def create_deep_agent(
     *,
@@ -77,15 +101,10 @@ def create_deep_agent(
     llm: Optional[Any] = None,
 ):
     """
-    Returns a LangGraph graph (same as deepagents) with planning + subagents.
-
-    Backward compatible:
-    - If llm is provided, use it.
-    - Else fall back to get_model(provider) (original behavior).
+    Returns a LangGraph graph with planning + subagents.
     """
     model = llm or get_model(provider)
     project_context = load_langcode_context(project_dir)
-
     prompt = (BASE_SYSTEM + "\n" + (instructions or "") + "\n" + BASE_DEEP_SUFFIX + project_context).strip()
 
     tools = asyncio.run(_load_dynamic_tools(project_dir, model, apply, test_cmd))

@@ -5,7 +5,7 @@ from ..safety.confirm import confirm_action
 
 def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
     @tool("run_cmd", return_direct=False)
-    def run_cmd(command: str) -> str:
+    def run_cmd(command: str, timeout_sec: int = 120) -> str:
         """
         Run a shell command in the project directory (`cwd`).
 
@@ -15,15 +15,10 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
         - Searching file contents (`grep "Router" -r src/`)
         - Running project commands (`pytest`, `make build`)
 
-        Guidelines:
+        Notes:
         - Pass a single command string (chain with `&&` if needed).
         - `{TEST_CMD}` will be replaced with the configured test command if used.
-        - Avoid destructive or interactive commands (`rm -rf`, `vim`, etc.).
-
-        Output always includes:
-        - The executed command and exit code
-        - Captured stdout (if any)
-        - Captured stderr (if any)
+        - Timeout defaults to 120s; increase for long tests.
         """
         cmd = command.strip()
         if cmd == "{TEST_CMD}" and test_cmd:
@@ -33,7 +28,16 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
             return f"Command cancelled: {cmd}"
 
         try:
-            result = subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace',)
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=max(5, int(timeout_sec)),  # NEW
+            )
             stdout = result.stdout.strip()
             stderr = result.stderr.strip()
             code = result.returncode
@@ -43,6 +47,8 @@ def make_run_cmd_tool(cwd: str, apply: bool, test_cmd: str | None):
             if stderr:
                 out += f"\n[stderr]\n{stderr}\n"
             return out
+        except subprocess.TimeoutExpired:
+            return f"$ {cmd}\n(timeout after {timeout_sec}s)\n"
         except Exception as e:
             return f"Error running `{cmd}`: {e}"
     return run_cmd

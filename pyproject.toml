@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,7 +11,7 @@ dependencies = [
     "typer>=0.12.3",
     "rich==13.7.1",
     "python-dotenv==1.0.1",
-    "langchain>=0.2.12",  # Let pip resolve compatible versions
+    "langchain>=0.2.12",
     "langchain-community>=0.2.10",
     "langchain-anthropic>=0.2.4",
     "langchain-google-genai>=2.0.4",
@@ -27,3 +27,13 @@ dependencies = [
 
 [project.scripts]
 langcode = "langchain_code.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["langchain_code*"]
+
+[tool.setuptools.package-data]
+"langchain_code.config" = ["mcp.json"]
