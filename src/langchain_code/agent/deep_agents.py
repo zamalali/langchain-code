@@ -118,5 +118,5 @@ def create_deep_agent(
         state_schema=state_schema,
         checkpointer=checkpointer,
     )
-    graph.config = {"recursion_limit": 70}
+    graph.config = {"recursion_limit": 150}
     return graph

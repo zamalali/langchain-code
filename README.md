@@ -167,6 +167,40 @@ A rule‑augmented, feedback‑aware router picks the right model for each task 
 
 ### Agent architectures
 
+## Agent architectures
+
+### ReAct Agent
+
+The ReAct Agent is a fast loop for chat, reads, and targeted edits. It follows the ReAct (Reasoning and Acting) framework, where the agent reasons about the current state, decides on an action, and then observes the result of that action. This process is repeated until the agent reaches a conclusion or the maximum number of iterations is reached.
+
+```mermaid
+graph LR
+    A[User Input] --> B{Choose Tool?}
+    B -- Yes --> C[Call Tool]
+    C --> D[Tool Result]
+    B -- No --> E[Generate Response]
+    D --> F[Update Chat History]
+    E --> F
+    F --> A
+```
+
+### Deep Agent
+
+The Deep Agent is a structured, multi-agent system for complex work. It uses a LangGraph-style architecture to execute multi-step, long-horizon tasks. The Deep Agent consists of several sub-agents, each responsible for a specific task, such as research, code generation, and Git operations.
+
+```mermaid
+graph LR
+    A[User Input] --> B{Planning Agent}
+    B --> C{Choose Task}
+    C --> D{Execute Task}
+    D --> E{Update Todos}
+    E --> F{Choose Next Task}
+    F --> G{Is Task Done?}
+    G -- Yes --> H[Generate Final Report]
+    G -- No --> C
+    H --> I[Output]
+```
+
 * **ReAct Agent** – fast loop for chat, reads, and targeted edits.
 * **Deep Agent** – structured, multi‑agent system for complex work:
 

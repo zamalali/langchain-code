@@ -16,11 +16,11 @@ import re
 try:
     import termios
     import tty
-except Exception:  # pragma: no cover
+except Exception:  
     termios = None
     tty = None
 try:
-    import msvcrt  # pragma: no cover
+    import msvcrt  
 except Exception:
     msvcrt = None
 
@@ -48,7 +48,7 @@ from .workflows.feature_impl import FEATURE_INSTR
 from .workflows.bug_fix import BUGFIX_INSTR
 from .workflows.auto import AUTO_DEEP_INSTR
 from langchain_core.messages import HumanMessage, AIMessage
-
+from langchain_core.callbacks import BaseCallbackHandler
 
 APP_HELP = """
 LangCode – ReAct + Tools + Deep (LangGraph) code agent CLI.
@@ -680,7 +680,7 @@ def _panel_agent_output(text: str, title: str = "Agent") -> Panel:
         border_style="cyan",
         box=box.ROUNDED,
         padding=(1, 2),
-        expand=True,    # <<< key change: full-width panel; looks polished
+        expand=True,    
     )
 
 def _panel_router_choice(info: Dict[str, Any]) -> Panel:
@@ -711,6 +711,61 @@ def _show_loader() -> Progress:
     )
     progress.add_task("[bold]Processing...", total=None)
     return progress
+
+def _short(s: str, n: int = 280) -> str:
+    s = s.replace("\r\n", "\n").strip()
+    return s if len(s) <= n else s[:n] + " …"
+
+class _RichDeepLogs(BaseCallbackHandler):
+    """
+    Minimal, pretty callback printer for deep (LangGraph) runs.
+    Only logs the big milestones so it stays readable.
+    Toggle by passing --verbose.
+    """
+    def __init__(self, console: Console):
+        self.c = console
+
+    # Chains/graphs (LangGraph nodes surface as chains)
+    def on_chain_start(self, serialized, inputs, **kwargs):
+        name = (serialized or {}).get("id") or (serialized or {}).get("name") or "chain"
+        self.c.print(Panel.fit(
+            Text.from_markup(f"▶ [bold]Start[/bold] {name}\n[dim]{_short(str(inputs))}[/dim]"),
+            border_style="cyan", title="Node", box=box.ROUNDED
+        ))
+
+    def on_chain_end(self, outputs, **kwargs):
+        self.c.print(Panel.fit(
+            Text.from_markup(f"[bold]End[/bold]\n[dim]{_short(str(outputs))}[/dim]"),
+            border_style="cyan", title="Node", box=box.ROUNDED
+        ))
+
+    # Tools
+    def on_tool_start(self, serialized, tool_input, **kwargs):
+        name = (serialized or {}).get("name") or "tool"
+        self.c.print(Panel.fit(
+            Text.from_markup(f"[bold]{name}[/bold]\n[dim]{_short(str(tool_input))}[/dim]"),
+            border_style="yellow", title="Tool", box=box.ROUNDED
+        ))
+
+    def on_tool_end(self, output, **kwargs):
+        self.c.print(Panel.fit(
+            Text.from_markup(f" [bold]Tool result[/bold]\n{_short(str(output))}"),
+            border_style="yellow", title="Tool", box=box.ROUNDED
+        ))
+
+    def on_llm_start(self, serialized, prompts, **kwargs):
+        name = (serialized or {}).get("id") or (serialized or {}).get("name") or "llm"
+        show = "\n---\n".join(_short(p) for p in (prompts or [])[:1])
+        self.c.print(Panel.fit(
+            Text.from_markup(f"[bold]{name}[/bold]\n{show}"),
+            border_style="green", title="LLM", box=box.ROUNDED
+        ))
+
+    def on_llm_end(self, response, **kwargs):
+        self.c.print(Panel.fit(
+            Text("[dim]LLM complete[/dim]"),
+            border_style="green", title="LLM", box=box.ROUNDED
+        ))
 
 def _maybe_coerce_img_command(raw: str) -> str:
     s = raw.strip()
@@ -785,10 +840,6 @@ def _build_deep_agent_with_optional_llm(provider: str, project_dir: Path, llm=No
     except TypeError:
         pass
     return build_deep_agent(provider=provider, project_dir=project_dir, **kwargs)
-
-# =========================
-# Interactive Launcher
-# =========================
 
 class _Key:
     UP = "UP"
@@ -1268,7 +1319,6 @@ def _selection_hub(initial_state: Optional[Dict[str, Any]] = None) -> None:
 
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
-    # If invoked bare (no subcommand), run the selection hub (persistent)
     if ctx.invoked_subcommand is None:
         _selection_hub(_default_state())
         raise typer.Exit()
@@ -1281,7 +1331,7 @@ def chat(
     auto: bool = typer.Option(False, "--auto", help="Autonomy mode: plan+act with no questions (deep mode only)."),
     router: bool = typer.Option(False, "--router", help="Auto-route to the most efficient LLM per query."),
     priority: str = typer.Option("balanced", "--priority", help="Router priority: balanced | cost | speed | quality"),
-    verbose: bool = typer.Option(False, "--verbose", help="Show model selection panels."),
+    verbose: bool = typer.Option(False, "--verbose", help="Show model selection panels (and deep logs)."),
 ) -> Optional[str]:
     """
     Returns:
@@ -1289,7 +1339,6 @@ def chat(
       - "select": user requested to return to launcher
       - None: normal return (caller may continue)
     """
-    # Ensure env for this project
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
     priority = (priority or "balanced").lower()
@@ -1306,8 +1355,8 @@ def chat(
         session_title += " (Auto)"
     _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
 
-    history: list = []  
-    msgs: list = []     
+    history: list = []
+    msgs: list = []
     static_agent = None
     if not router:
         if mode == "deep":
@@ -1351,16 +1400,17 @@ def chat(
 
             coerced = _maybe_coerce_img_command(user)
 
-            # Collect panels to print AFTER the spinner finishes
             pending_router_panel: Optional[Panel] = None
             pending_output_panel: Optional[Panel] = None
             react_history_update: Optional[Tuple[HumanMessage, AIMessage]] = None
 
-            with _show_loader():
-                agent = static_agent
-                model_info = None
-                chosen_llm = None
+            deep_verbose = (mode == "deep" and verbose)
+            deep_config: Dict[str, Any] = {}
+            agent = static_agent
+            model_info = None
+            chosen_llm = None
 
+            with _show_loader():
                 if router:
                     provider = _resolve_provider(llm, router=True)
                     model_info = get_model_info(provider, coerced, priority)
@@ -1408,44 +1458,42 @@ def chat(
                                 "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
                             )
                         })
+                    deep_config = {"configurable": {"recursion_limit": prio_limits.get(priority, 45)}}
 
-                    config = {"configurable": {"recursion_limit": prio_limits.get(priority, 45)}}
-                    output: str = ""
-                    try:
-                        res = agent.invoke({"messages": msgs}, config=config)
-                        if isinstance(res, dict) and "messages" in res:
-                            msgs = res["messages"]
-                        else:
-                            output = "Error: Invalid response format from agent."
-                    except Exception as e:
-                        output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
-                                  if "recursion" in str(e).lower()
-                                  else f"Agent error: {e}")
+                    if not deep_verbose:
+                        output: str = ""
+                        try:
+                            res = agent.invoke({"messages": msgs}, config=deep_config)
+                            if isinstance(res, dict) and "messages" in res:
+                                msgs = res["messages"]
+                            else:
+                                output = "Error: Invalid response format from agent."
+                        except Exception as e:
+                            output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
+                                      if "recursion" in str(e).lower()
+                                      else f"Agent error: {e}")
 
-                    if not output:
-                        last_content = _extract_last_content(msgs).strip()
-                        if not last_content:
-                            msgs.append({
-                                "role": "system",
-                                "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
-                            })
-                            try:
-                                res = agent.invoke({"messages": msgs}, config=config)
-                                if isinstance(res, dict) and "messages" in res:
-                                    msgs = res["messages"]
-                                last_content = _extract_last_content(msgs).strip()
-                            except Exception as e:
-                                last_content = f"Agent failed after retry: {e}"
-                        output = last_content or "No response generated."
-
-                    pending_output_panel = _panel_agent_output(output)
+                        if not output:
+                            last_content = _extract_last_content(msgs).strip()
+                            if not last_content:
+                                msgs.append({
+                                    "role": "system",
+                                    "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
+                                })
+                                try:
+                                    res = agent.invoke({"messages": msgs}, config=deep_config)
+                                    if isinstance(res, dict) and "messages" in res:
+                                        msgs = res["messages"]
+                                    last_content = _extract_last_content(msgs).strip()
+                                except Exception as e:
+                                    last_content = f"Agent failed after retry: {e}"
+                            output = last_content or "No response generated."
+                        pending_output_panel = _panel_agent_output(output)
 
                 else:
-                    # ReAct mode
                     try:
                         res = agent.invoke({"input": coerced, "chat_history": history})
                         output = res.get("output", "") if isinstance(res, dict) else str(res)
-
                         if not output.strip():
                             steps = res.get("intermediate_steps") if isinstance(res, dict) else None
                             if steps:
@@ -1466,6 +1514,23 @@ def chat(
 
             if pending_router_panel:
                 console.print(pending_router_panel)
+
+            if mode == "deep" and deep_verbose:
+                try:
+                    deep_config = dict(deep_config)
+                    deep_config["callbacks"] = [_RichDeepLogs(console)]
+                    res = agent.invoke({"messages": msgs}, config=deep_config)
+                    if isinstance(res, dict) and "messages" in res:
+                        msgs = res["messages"]
+                        output = _extract_last_content(msgs).strip() or "No response generated."
+                    else:
+                        output = "Error: Invalid response format from agent."
+                except Exception as e:
+                    output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
+                              if "recursion" in str(e).lower()
+                              else f"Agent error: {e}")
+                pending_output_panel = _panel_agent_output(output)
+
             if pending_output_panel:
                 console.print(pending_output_panel)
 
