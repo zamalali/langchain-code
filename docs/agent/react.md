@@ -9,7 +9,7 @@
 The ReAct Agent is a fast loop for chat, reads, and targeted edits. It follows the ReAct (Reasoning and Acting) framework, where the agent reasons about the current state, decides on an action, and then observes the result of that action. This process is repeated until the agent reaches a conclusion or the maximum number of iterations is reached.
 
 <div align="center">
-![ReAct Agent Diagram](../../assets/mermaid_1756325827.png)
+<img src="../../assets/mermaid_1756325827.png" alt="ReAct Agent Diagram">
 </div>
 
 This module provides an implementation of a coding agent based on the ReAct (Reasoning and Acting) framework. The `build_react_agent` function constructs an `AgentExecutor` that embodies the ReAct agent. The ReAct agent is designed to interact with its environment by interleaving reasoning steps with action execution. This allows the agent to dynamically adjust its strategy based on observations and feedback from the environment, leading to more adaptive and effective problem-solving. The ReAct framework combines the strengths of both reasoning and acting, enabling the agent to not only plan and strategize but also to execute actions and learn from the results. The agent leverages tool calling to interact with its environment.

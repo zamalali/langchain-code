@@ -9,7 +9,7 @@
 The Deep Agent is a structured, multi-agent system for complex work. It uses a LangGraph-style architecture to execute multi-step, long-horizon tasks. The Deep Agent consists of several sub-agents, each responsible for a specific task, such as research, code generation, and Git operations.
 
 <div align="center">
-![Deep Agent Diagram](../../assets/mermaid_1756325835.png)
+<img src="../../assets/mermaid_1756325835.png" alt="Deep Agent Diagram">
 </div>
 
 This module implements the `create_deep_agent` function, which constructs a sophisticated "deep" agent designed to orchestrate a team of specialized sub-agents. This agent is designed to tackle complex tasks that demand both in-depth research and precise code implementation. The Deep Agent excels at problems that are beyond the capabilities of simpler, single-agent systems by leveraging a hierarchical structure of sub-agents, each with specific roles and responsibilities. This design promotes modularity, scalability, and improved performance on complex tasks. The Deep Agent utilizes the ReAct framework, enabling it to reason about actions and observe their outcomes, leading to more robust and adaptive problem-solving.
