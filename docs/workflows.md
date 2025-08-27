@@ -18,6 +18,14 @@ The following workflows are available for the agent to use:
 
 
 
+The following workflows are available for the agent to use:
+
+- **Bug Fix:** A workflow for identifying and fixing bugs in code. This workflow typically involves the following steps: identifying the bug, reproducing the bug, diagnosing the bug, fixing the bug, and verifying the fix.
+- **Feature Implementation:** A workflow for implementing new features in a codebase. This workflow typically involves the following steps: understanding the requirements, designing the feature, implementing the feature, testing the feature, and integrating the feature.
+- **General Purpose:** A general-purpose workflow that can be adapted to a wide range of tasks. This workflow can be customized to fit the specific needs of the task at hand.
+
+
+
 - **Bug Fix:** A workflow for identifying and fixing bugs in code.
 - **Feature Implementation:** A workflow for implementing new features in a codebase.
 - **General Purpose:** A general-purpose workflow that can be adapted to a wide range of tasks.

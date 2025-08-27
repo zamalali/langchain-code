@@ -19,6 +19,15 @@ The tools module provides a collection of tools that the agent can use to perfor
 - **GitHub:** Provides functionalities for interacting with GitHub repositories, including creating, updating, and searching repositories, managing issues and pull requests, and pushing files.
 - **Mermaid:** Renders Mermaid syntax to a PNG file.
 
+- **Files:** Provides functionalities for listing directories, finding files using glob patterns, reading file contents, editing files by replacing snippets, writing new files, and deleting files.
+- **Search:** Enables searching for regex patterns within files under a specified directory.
+- **Shell:** Allows running shell commands in the project directory, facilitating tasks like listing files, searching file contents, and running project-specific commands.
+- **Web:** Offers a search engine optimized for comprehensive, accurate, and trusted results, useful for answering questions about current events.
+- **Multimodal:** Processes text and optional images with the underlying LLM.
+- **Planning:** Creates and updates structured todo lists for task management.
+- **GitHub:** Provides functionalities for interacting with GitHub repositories, including creating, updating, and searching repositories, managing issues and pull requests, and pushing files.
+- **Mermaid:** Renders Mermaid syntax to a PNG file.
+
 ## Tool Usage Guidelines
 
 - Always use tools rather than guessing.

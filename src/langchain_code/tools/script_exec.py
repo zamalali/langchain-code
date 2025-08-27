@@ -4,8 +4,7 @@ from typing import List, Optional, Literal
 import os, sys, time, shutil, subprocess, re, datetime as _dt
 
 from langchain_core.tools import tool
-from langchain_core.pydantic_v1 import BaseModel, Field
-
+from pydantic import BaseModel, Field
 # ---------------- interpreters & basics ----------------
 _INTERPS = {
     "python":      lambda: [(sys.executable or "python"), "-u"],  # unbuffered
