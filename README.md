@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/logo.png" alt="LangCode Logo" width="180" />
   <h1><b>LangCode</b></h1>
-  <p><b>The only CLI you need.</b></p>
+  <p style="font-size: 1.5em; font-style: italic; color: #3498db;">The only CLI you need.</p>
 </div>
 
 ---
@@ -39,44 +39,49 @@ langcode --help
 
 ## Quick start
 
-Start in the current directory:
+1.  **Installation:**
+    ```bash
+    pip install langchain-code
+    ```
 
-```bash
-langcode chat
-```
+2.  **Set up API keys:**
+    Create a `.env` file in your project root and add your API keys for Anthropic and/or Google Gemini:
+    ```env
+    ANTHROPIC_API_KEY="sk-ant-..."
+    GOOGLE_API_KEY="AIzaSy..."
+    ```
 
-Implement a feature:
+3.  **Start an interactive chat session:**
+    ```bash
+    langcode chat
+    ```
 
-```bash
-langcode feature "Add a /health endpoint to the main API" --test-cmd "pytest -q"
-```
+4.  **Implement a feature:**
+    ```bash
+    langcode feature "Add a /health endpoint to the main API" --test-cmd "pytest -q"
+    ```
 
-Fix a bug:
+5.  **Fix a bug:**
+    ```bash
+    langcode fix "Login button unresponsive on main page" --log errors.log
+    ```
 
-```bash
-langcode fix "Login button unresponsive on main page"
-langcode fix --log errors.log
-```
+6.  **Run a complex task with the Deep Agent:**
+    ```bash
+    langcode deepagent "Implement JWT auth with refresh tokens and tests"
+    ```
 
-Run a complex task with the Deep Agent:
+7.  **Select an LLM provider explicitly:**
+    ```bash
+    langcode chat --llm gemini
+    # or
+    langcode chat --llm anthropic
+    ```
 
-```bash
-deepagent "Implement JWT auth with refresh tokens and tests"
-```
-
-Select an LLM provider explicitly:
-
-```bash
-langcode chat --llm gemini
-# or
-langcode chat --llm anthropic
-```
-
-Run without confirmation:
-
-```bash
-langcode feature "Add dark mode toggle" --apply
-```
+8.  **Run without confirmation (use with caution):**
+    ```bash
+    langcode feature "Add dark mode toggle" --apply
+    ```
 
 ## Authentication & configuration
 
@@ -110,48 +115,110 @@ Project settings (optional):
 
 ## Commands
 
+LangCode provides a set of commands to interact with your codebase. Here's a breakdown of each command and its usage:
+
 ### `langcode chat`
 
-Interactive session for exploration, Q\&A, and scoped edits.
+Starts an interactive chat session with the agent. This is useful for exploring the codebase, asking questions, and making scoped edits.
 
 ```bash
-langcode chat [--llm <provider>] [--include-directories <paths>] [--apply]
+langcode chat [--llm <provider>] [--mode <react|deep>] [--auto] [--router] [--priority <balanced|cost|speed|quality>] [--project-dir <path>]
 ```
+
+*   `--llm`: Specifies the LLM provider to use (anthropic or gemini). If not specified, LangCode will automatically select a provider based on availability and router policy.
+*   `--mode`: Selects the reasoning engine to use: `react` (default) or `deep`. The `deep` mode enables more complex, multi-step reasoning.
+*   `--auto`: (Deep mode only) Enables autopilot mode, where the agent plans and executes tasks end-to-end without asking for confirmation.
+*   `--router`: Enables smart model routing, which automatically picks the most efficient LLM per prompt based on the specified priority.
+*   `--priority`: Sets the routing priority: `balanced` (default), `cost`, `speed`, or `quality`. This influences the model choice when routing is enabled.
+*   `--project-dir`: Specifies the project directory to operate in. Defaults to the current directory.
+
+**Example:**
+```bash
+langcode chat --llm gemini --mode deep --auto
+```
+This command starts a chat session using the Gemini LLM in deep mode with autopilot enabled.
 
 ### `langcode feature`
 
-Plan → edit‑by‑diff → test for a single feature request.
+Implements a feature end-to-end, following a plan -> edit -> verify workflow. This command is designed to automate the process of adding new features to your codebase.
 
 ```bash
-langcode feature [OPTIONS] <REQUEST>
-
-Options:
-  --test-cmd "pytest -q"    # optional test runner
-  --apply                    # apply file edits and run commands without prompts
-  --llm <provider>
+langcode feature <request> [--test-cmd <command>] [--apply] [--llm <provider>] [--router] [--priority <balanced|cost|speed|quality>] [--project-dir <path>]
 ```
+
+*   `<request>`: A description of the feature to implement (e.g., "Add a dark mode toggle").
+*   `--test-cmd`: Specifies a command to run to verify the changes (e.g., `pytest -q`).
+*   `--apply`: Applies the changes and runs the test command without prompting for confirmation.
+*   `--llm`: Specifies the LLM provider to use (anthropic or gemini).
+*   `--router`: Enables smart model routing.
+*   `--priority`: Sets the routing priority.
+*   `--project-dir`: Specifies the project directory.
+
+**Example:**
+```bash
+langcode feature "Implement user authentication with JWT" --test-cmd "pytest -q" --apply
+```
+This command implements user authentication with JWT, runs the tests, and applies the changes without prompting.
 
 ### `langcode fix`
 
-Diagnose and patch with a description or stack trace.
+Diagnoses and fixes a bug, following a trace -> pinpoint -> patch -> test workflow. This command helps automate the process of fixing bugs in your codebase.
 
 ```bash
-langcode fix [OPTIONS] [REQUEST]
-
-Options:
-  --log <FILE>               # error log or stack trace
-  --test-cmd "npm test"      # optional test runner
-  --apply
-  --llm <provider>
+langcode fix <request> [--log <file>] [--test-cmd <command>] [--apply] [--llm <provider>] [--router] [--priority <balanced|cost|speed|quality>] [--project-dir <path>]
 ```
 
-### `deepagent`
+*   `<request>`: A description of the bug to fix (e.g., "Fix crash on image upload").
+*   `--log`: Specifies the path to an error log or stack trace.
+*   `--test-cmd`: Specifies a command to run to verify the fix.
+*   `--apply`: Applies the changes and runs the test command without prompting for confirmation.
+*   `--llm`: Specifies the LLM provider to use.
+*   `--router`: Enables smart model routing.
+*   `--priority`: Sets the routing priority.
+*   `--project-dir`: Specifies the project directory.
 
-Execute multi‑step, long‑horizon tasks using the Deep Agent architecture.
+**Example:**
+```bash
+langcode fix "Resolve memory leak in image processing module" --log memory_leak.log --test-cmd "pytest -q"
+```
+This command resolves a memory leak using the provided log file and runs the tests to verify the fix.
+
+### `langcode analyze`
+
+Analyzes the codebase and generates insights using the Deep Agent architecture. This command is useful for getting an overview of the project and understanding its architecture.
 
 ```bash
-deepagent <REQUEST>
+langcode analyze <request> [--llm <provider>] [--router] [--priority <balanced|cost|speed|quality>] [--project-dir <path>]
 ```
+
+*   `<request>`: A question or request for analysis (e.g., "What are the main components of this project?").
+*   `--llm`: Specifies the LLM provider to use.
+*   `--router`: Enables smart model routing.
+*   `--priority`: Sets the routing priority.
+*   `--project-dir`: Specifies the project directory.
+
+**Example:**
+```bash
+langcode analyze "Explain the data flow in the user authentication module"
+```
+This command analyzes the user authentication module and explains the data flow.
+
+### `langcode instr`
+
+Opens or creates the project-specific instructions file (`.langcode/langcode.md`) in your editor. This file allows you to provide custom instructions and guidelines for the agent to follow.
+
+```bash
+langcode instr [--project-dir <path>]
+```
+
+*   `--project-dir`: Specifies the project directory.
+
+**Example:**
+```bash
+langcode instr
+```
+This command opens the `.langcode/langcode.md` file in your default editor.
+
 
 ## Workflows
 
@@ -173,33 +240,9 @@ A rule‑augmented, feedback‑aware router picks the right model for each task 
 
 The ReAct Agent is a fast loop for chat, reads, and targeted edits. It follows the ReAct (Reasoning and Acting) framework, where the agent reasons about the current state, decides on an action, and then observes the result of that action. This process is repeated until the agent reaches a conclusion or the maximum number of iterations is reached.
 
-```mermaid
-graph LR
-    A[User Input] --> B{Choose Tool?}
-    B -- Yes --> C[Call Tool]
-    C --> D[Tool Result]
-    B -- No --> E[Generate Response]
-    D --> F[Update Chat History]
-    E --> F
-    F --> A
-```
-
 ### Deep Agent
 
 The Deep Agent is a structured, multi-agent system for complex work. It uses a LangGraph-style architecture to execute multi-step, long-horizon tasks. The Deep Agent consists of several sub-agents, each responsible for a specific task, such as research, code generation, and Git operations.
-
-```mermaid
-graph LR
-    A[User Input] --> B{Planning Agent}
-    B --> C{Choose Task}
-    C --> D{Execute Task}
-    D --> E{Update Todos}
-    E --> F{Choose Next Task}
-    F --> G{Is Task Done?}
-    G -- Yes --> H[Generate Final Report]
-    G -- No --> C
-    H --> I[Output]
-```
 
 * **ReAct Agent** – fast loop for chat, reads, and targeted edits.
 * **Deep Agent** – structured, multi‑agent system for complex work:
