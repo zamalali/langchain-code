@@ -700,6 +700,12 @@ def session_banner(
         box=box.HEAVY,
     )
 
+def _pause_if_in_launcher() -> None:
+    """If we were launched from the selection hub, wait for Enter before redrawing it."""
+    if _IN_SELECTION_HUB:
+        console.print(Rule(style="green"))
+        console.input("[dim]Press Enter to return to the launcher…[/dim]")
+
 def _print_session_header(
     title: str,
     provider: Optional[str],
@@ -1756,7 +1762,7 @@ def feature(
         res = agent.invoke({"input": request, "chat_history": []})
         output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Feature Result"))
-
+    _pause_if_in_launcher()
 @app.command(help="Diagnose & fix a bug (trace → pinpoint → patch → test). Accepts --log, --test-cmd, and supports --apply.")
 def fix(
     request: Optional[str] = typer.Argument(None, help='e.g. "Fix crash on image upload"'),
@@ -1821,7 +1827,7 @@ def fix(
         res = agent.invoke({"input": bug_input, "chat_history": []})
         output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Fix Result"))
-
+    _pause_if_in_launcher()
 @app.command(help="Analyze any codebase and generate insights (deep agent).")
 def analyze(
     request: str = typer.Argument(..., help='e.g. "What are the main components of this project?"'),
@@ -1872,21 +1878,25 @@ def analyze(
         agent = cached
 
     with _show_loader():
-        # res = agent.invoke({"messages": [{"role": "user", "content": request}]},
-        #                    config={"configurable": {"recursion_limit": 45}})
-        res = agent.invoke(
-            {"messages": [{"role": "user", "content": request}]},
-            config={
-                "recursion_limit": 45,
-                "configurable": {"thread_id": _thread_id_for(project_dir, "analyze")},
-            },
-        )
-        output = (
-            _extract_last_content(res.get("messages", [])).strip()
-            if isinstance(res, dict) and "messages" in res
-            else str(res)
-        )
-    console.print(_panel_agent_output(output, title="Analysis Result"))
+        output = ""
+        try:
+            res = agent.invoke(
+                {"messages": [{"role": "user", "content": request}]},
+                config={
+                    "recursion_limit": 45,
+                    "configurable": {"thread_id": _thread_id_for(project_dir, "analyze")},
+                },
+            )
+            output = (
+                _extract_last_content(res.get("messages", [])).strip()
+                if isinstance(res, dict) and "messages" in res
+                else str(res)
+            )
+        except Exception as e:
+            output = f"Analyze error: {e}"
+    console.print(_panel_agent_output(output or "No response generated.", title="Analysis Result"))
+    _pause_if_in_launcher()
+
 
 @app.command(name="instr", help="Open or create project-specific instructions (.langcode/langcode.md) in your editor.")
 def edit_instructions(
