@@ -1736,7 +1736,6 @@ def feature(
     if router and verbose and model_info:
         console.print(_panel_router_choice(model_info))
 
-    # Cache for feature run too
     model_key = (model_info or {}).get("langchain_model_name", "default")
     cache_key = ("react", provider, model_key, str(project_dir.resolve()), False)
     cached = _agent_cache_get(cache_key)
@@ -1754,7 +1753,7 @@ def feature(
         agent = cached
 
     with _show_loader():
-        res = agent.invoke({"input": request})
+        res = agent.invoke({"input": request, "chat_history": []})
         output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Feature Result"))
 
@@ -1770,7 +1769,6 @@ def fix(
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panel."),
 ):
-    # Ensure env for this project
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
     priority = (priority or "balanced").lower()
@@ -1820,7 +1818,7 @@ def fix(
         agent = cached
 
     with _show_loader():
-        res = agent.invoke({"input": bug_input})
+        res = agent.invoke({"input": bug_input, "chat_history": []})
         output = res.get("output", "") if isinstance(res, dict) else str(res)
     console.print(_panel_agent_output(output, title="Fix Result"))
 
