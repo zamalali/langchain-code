@@ -19,6 +19,10 @@
   </p>
 </div>
 
+<div align="center">
+    <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%"/>
+</div>
+
 
 LangCode is an AI-powered coding assistant designed to streamline your development workflow. Interact with your codebase, implement new features, fix bugs, and gain insights, all from a single, intuitive interface.
 
@@ -40,11 +44,7 @@ LangCode is an AI-powered coding assistant designed to streamline your developme
     ```
 
 2.  **Launch the Interactive Launcher:**
-    Just type `langcode` in your terminal and hit Enter. This opens a user-friendly interactive menu where you can easily configure your session and access various functionalities without needing to remember specific command-line arguments. See the image below for a preview:
-
-    <div align="center">
-        <img src="assets/cmd.png" alt="LangCode Home Screen" width="90%"/>
-    </div>
+    Just type `langcode` in your terminal and hit Enter. This opens a user-friendly interactive menu where you can easily configure your session and access various functionalities without needing to remember specific command-line arguments. See the image shown above.
 
 
 ## Interactive Mode
