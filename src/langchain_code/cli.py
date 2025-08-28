@@ -12,6 +12,7 @@ import subprocess
 import difflib
 from datetime import datetime
 import re
+import json
 
 try:
     import termios
@@ -39,7 +40,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 warnings.filterwarnings("ignore", message=r"typing\.NotRequired is not a Python type.*")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pydantic\._internal.*")
 
-# --- router-aware helpers from config ---
 from .config_core import resolve_provider as _resolve_provider_base
 from .config_core import get_model, get_model_info
 
@@ -52,6 +52,9 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 APP_HELP = """
 LangCode – ReAct + Tools + Deep (LangGraph) code agent CLI.
+
+Just type `langcode` and hit enter – it's the only CLI you'll ever need.
+Toggle across everything without leaving the terminal!
 
 Use it to chat with an agent, implement features, fix bugs, or analyze a codebase.
 
@@ -92,12 +95,7 @@ PROMPT = "[bold green]langcode[/bold green] [dim]›[/dim] "
 _AGENT_CACHE: "OrderedDict[Tuple[str, str, str, str, bool], Any]" = OrderedDict()
 _AGENT_CACHE_MAX = 6
 
-# NEW: tracks whether we're currently inside the selection hub (prevents nesting)
 _IN_SELECTION_HUB = False
-
-# =========================
-# Environment helpers (NEW)
-# =========================
 
 ENV_FILENAMES = (".env", ".env.local")
 
@@ -125,7 +123,6 @@ def _parse_env_text(text: str) -> Dict[str, str]:
         val = val.strip()
         if (len(val) >= 2) and ((val[0] == val[-1]) and val[0] in ('"', "'")):
             val = val[1:-1]
-        # unescape simple sequences
         val = val.replace("\\n", "\n").replace("\\t", "\t")
         if key:
             env[key] = val
@@ -208,7 +205,9 @@ def _ensure_env_file(project_dir: Path) -> Path:
 # ANTHROPIC_API_KEY=...
 # GOOGLE_API_KEY=...
 # GEMINI_API_KEY=...
+# GROQ_API_KEY=...
 # LANGCHAIN_API_KEY=...
+# TAVILY_API_KEY=... (For web search)
 # LANGCHAIN_TRACING_V2=true
 # LANGCHAIN_PROJECT=langcode
 
@@ -262,12 +261,11 @@ def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = T
     """
     info = _load_env_files(project_dir, override_existing=False)
     if info["files_found"]:
-        return  # Already loaded something
+        return  
 
     if not interactive_prompt_if_missing:
         return
 
-    # Offer to create .env now so user never leaves terminal
     console.print(Panel.fit(
         Text.from_markup(
             f"No [bold].env[/bold] found in [bold]{project_dir}[/bold].\n"
@@ -280,7 +278,6 @@ def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = T
     answer = console.input("[bold]Create .env now?[/bold] [Y/n]: ").strip().lower()
     if answer in ("", "y", "yes"):
         _edit_env_file(project_dir)
-        # Load immediately after creation
         _load_env_files(project_dir, override_existing=False)
         console.print(Panel.fit(Text("Environment loaded from .env.", style="green"), border_style="green"))
     else:
@@ -305,6 +302,100 @@ def _agent_cache_put(key: Tuple[str, str, str, str, bool], value: Any) -> None:
 
 LANGCODE_DIRNAME = ".langcode"
 LANGCODE_FILENAME = "langcode.md"
+MCP_FILENAME = "mcp.json"
+
+MCP_PROJECT_REL = Path("src") / "langchain_code" / "config" / MCP_FILENAME
+
+def _mcp_target_path(project_dir: Path) -> Path:
+    """
+    Always prefer the repo MCP at src/langchain_code/config/mcp.json.
+    (We’ll mirror to .langcode/mcp.json after saving for backward compatibility.)
+    """
+    prefer = project_dir / MCP_PROJECT_REL
+    # Safety: keep path inside project_dir even on weird symlinks.
+    try:
+        _ = prefer.resolve().relative_to(project_dir.resolve())
+    except Exception:
+        return project_dir / LANGCODE_DIRNAME / MCP_FILENAME
+    return prefer
+
+def _ensure_mcp_json(project_dir: Path) -> Path:
+    """
+    Ensure MCP config exists. Prefer src/langchain_code/config/mcp.json.
+    """
+    mcp_path = _mcp_target_path(project_dir)
+    mcp_path.parent.mkdir(parents=True, exist_ok=True)
+    if not mcp_path.exists():
+        template = {
+            "servers": {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "transport": "stdio",
+                    "env": {
+                        "GITHUB_TOKEN": "$GITHUB_API_KEY",
+                        "GITHUB_TOOLSETS": "repos,issues,pull_requests,actions,code_security"
+                    }
+                }
+            }
+        }
+        mcp_path.write_text(json.dumps(template, indent=2) + "\n", encoding="utf-8")
+    return mcp_path
+
+
+def _mcp_status_label(project_dir: Path) -> str:
+    """
+    Show status for MCP config, pointing to src/langchain_code/config/mcp.json (or legacy).
+    """
+    mcp_path = _mcp_target_path(project_dir)
+    rel = os.path.relpath(mcp_path, project_dir)
+    if not mcp_path.exists():
+        return f"create…  ({rel})"
+    try:
+        data = json.loads(mcp_path.read_text(encoding="utf-8") or "{}")
+        servers = data.get("servers", {}) or {}
+        count = len(servers) if isinstance(servers, dict) else 0
+        return f"edit…  ({rel}, {count} server{'s' if count != 1 else ''})"
+    except Exception:
+        return f"edit…  ({rel}, unreadable)"
+
+
+def _edit_mcp_json(project_dir: Path) -> None:
+    """
+    Open MCP config in a terminal editor (Vim-first), fall back to click.edit / inline,
+    and show a short diff stat after save. Prefers src/langchain_code/config/mcp.json.
+    """
+    mcp_path = _ensure_mcp_json(project_dir)
+    original = mcp_path.read_text(encoding="utf-8")
+
+    launched = _open_in_terminal_editor(mcp_path)
+    edited_text: Optional[str] = None
+
+    if not launched:
+        edited_text = click.edit(original, require_save=False)
+        if edited_text is None:
+            edited_text = _inline_capture_editor(original)
+        if edited_text is not None and edited_text != original:
+            mcp_path.write_text(edited_text, encoding="utf-8")
+    else:
+        edited_text = mcp_path.read_text(encoding="utf-8")
+
+    if edited_text is None:
+        console.print(Panel.fit(Text("No changes saved.", style="yellow"), border_style="yellow"))
+        return
+    if edited_text == original:
+        console.print(Panel.fit(Text("No changes saved (file unchanged).", style="yellow"), border_style="yellow"))
+        return
+
+    stats = _diff_stats(original, edited_text)
+    console.print(Panel.fit(
+        Text.from_markup(
+            f"Saved [bold]{mcp_path}[/bold]\n"
+            f"[green]+{stats['added']}[/green] / [red]-{stats['removed']}[/red] • total {stats['total_after']} lines"
+        ),
+        border_style="green"
+    ))
+
 
 def _ensure_langcode_md(project_dir: Path) -> Path:
     """
@@ -817,6 +908,9 @@ def _extract_last_content(messages: list) -> str:
 
     return (str(c) if c is not None else str(last)).strip()
 
+def _thread_id_for(project_dir: Path, purpose: str = "chat") -> str:
+    """Stable thread id per project & purpose for LangGraph checkpointer."""
+    return f"{purpose}@{project_dir.resolve()}"
 
 def _resolve_provider(llm_opt: Optional[str], router: bool) -> str:
     if llm_opt:
@@ -919,7 +1013,8 @@ def _info_panel_for(field: str) -> Panel:
         "Apply": "[bold]Apply[/bold] (feature/fix only): If ON, the agent is allowed to [bold]write files[/bold] and [bold]run commands[/bold]. If OFF, it proposes diffs and commands but does not execute them.",
         "LLM": "[bold]LLM provider[/bold]: Explicitly force [cyan]anthropic[/cyan] or [cyan]gemini[/cyan]. Leave blank to follow router/defaults.",
         "Project": "[bold]Project directory[/bold]: Where the agent operates.",
-        "Custom Instructions": "[bold].langcode/langcode.md[/bold]: Project-specific instructions appended to the base prompt. Press Enter to open Vim (or $VISUAL/$EDITOR). Exit with :wq. A shortstat will be shown.",
+        "Custom Instructions": "[bold].langcode/langcode.md[/bold]: Project-specific instructions appended to the base prompt. Press Enter to open Vim (or $VISUAL/$EDITOR). Exit with :wq.",
+        "MCP Config": "[bold].langcode/mcp.json[/bold]: Configure MCP servers used by the agent/tools. Press Enter to open Vim (or $VISUAL/$EDITOR). Exit with :wq. File is created if missing.",
         "Environment": "[bold].env[/bold]: Create/edit env vars (API keys, config) right here. We'll auto-load from .env / .env.local. If none exists, you can create one inline.",
         "Tests": "[bold]Test command[/bold]: e.g. [cyan]pytest -q[/cyan] or [cyan]npm test[/cyan]. Used by feature/fix flows.",
         "Start": "[bold]Enter[/bold] to launch with the current configuration.",
@@ -1037,9 +1132,6 @@ def _help_content() -> Panel:
         expand=True,
     )
 
-
-
-
 def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = False) -> None:
     console.clear()
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
@@ -1074,6 +1166,7 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
         instr_val = f"create…  ({LANGCODE_DIRNAME}/{LANGCODE_FILENAME})"
 
     env_val = _env_status_label(state["project_dir"])
+    mcp_val = _mcp_status_label(state["project_dir"])
 
     labels = [
         ("Command", cmd_val, True),
@@ -1084,8 +1177,9 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
         ("Apply", apply_val, apply_enabled),
         ("LLM", llm_val, True),
         ("Project", proj_val, True),
-        ("Environment", env_val, True),  # NEW
+        ("Environment", env_val, True),
         ("Custom Instructions", instr_val, True),
+        ("MCP Config", mcp_val, True),  
         ("Tests", tests_val, state["command"] in ("feature", "fix")),
         ("Start", "Press Enter", True),
     ]
@@ -1123,7 +1217,7 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     show_help = False
     fields_order = [
         "Command", "Engine", "Router", "Priority", "Autopilot", "Apply",
-        "LLM", "Project", "Environment", "Custom Instructions", "Tests", "Start"
+        "LLM", "Project", "Environment", "Custom Instructions", "MCP Config", "Tests", "Start"
     ]
 
     def toggle(field: str, direction: int) -> None:
@@ -1174,6 +1268,11 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 _edit_langcode_md(state["project_dir"])
             except Exception as e:
                 console.print(Panel.fit(Text(f"Failed to edit custom instructions: {e}", style="bold red"), border_style="red"))
+        elif field == "MCP Config":
+            try:
+                _edit_mcp_json(state["project_dir"])
+            except Exception as e:
+                console.print(Panel.fit(Text(f"Failed to edit MCP config: {e}", style="bold red"), border_style="red"))
         elif field == "Tests":
             if state["command"] in ("feature", "fix"):
                 t = console.input("[bold]Test command[/bold] (e.g. pytest -q) – empty to clear: ").strip()
@@ -1202,7 +1301,7 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             continue
         if key == _Key.ENTER:
             field = fields_order[focus_index]
-            if field in ("Project", "Environment", "Custom Instructions", "Tests"):
+            if field in ("Project", "Environment", "Custom Instructions", "MCP Config", "Tests"):
                 toggle(field, +1)
                 continue
             if field == "Start":
@@ -1307,7 +1406,7 @@ def _selection_hub(initial_state: Optional[Dict[str, Any]] = None) -> None:
         while True:
             chosen = _launcher_loop(state)
             if not chosen:
-                console.print("\n[bold]Goodbye![/bold]")
+                # console.print("\n[bold]Goodbye![/bold]")
                 return
             state.update(chosen)
             outcome = _dispatch_from_state(chosen)
@@ -1357,6 +1456,13 @@ def chat(
 
     history: list = []
     msgs: list = []
+    last_todos: list = []
+    last_files: dict = {}
+    user_turns = 0
+    ai_turns = 0
+    deep_thread_id = _thread_id_for(project_dir, "chat")
+    db_path = project_dir / ".langcode" / "memory.sqlite"
+
     static_agent = None
     if not router:
         if mode == "deep":
@@ -1397,8 +1503,43 @@ def chat(
                 return "quit"
             if low in {"exit", "quit", ":q", "/exit", "/quit"}:
                 return "quit"
+            
+            if low in {"help", "/help", ":help"}:
+                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
+                console.print(_help_content())
+                continue
+
+            if low in {"/memory", "/stats"}:
+                if mode != "deep":
+                    console.print(Panel.fit(Text("Memory & stats are available in deep mode only.", style="yellow"),
+                                            border_style="yellow"))
+                    continue
+                from rich.table import Table
+                if low == "/memory":
+                    t = Table.grid(padding=(0, 2))
+                    t.add_row(Text("Thread", style="bold"), Text(deep_thread_id))
+                    t.add_row(Text("DB", style="bold"), Text(str(db_path)))
+                    t.add_row(
+                        Text("Todos", style="bold"),
+                        Text(", ".join(f"[{i+1}] {it.get('content','')}: {it.get('status','pending')}"
+                                       for i, it in enumerate(last_todos)) or "(none)")
+                    )
+                    t.add_row(Text("Files", style="bold"), Text(", ".join(sorted(last_files.keys())) or "(none)"))
+                    console.print(Panel(t, title="/memory", border_style="cyan", box=box.ROUNDED))
+                else:
+                    t = Table.grid(padding=(0, 2))
+                    t.add_row(Text("User turns", style="bold"), Text(str(user_turns)))
+                    t.add_row(Text("Agent turns", style="bold"), Text(str(ai_turns)))
+                    t.add_row(Text("Messages (current buffer)", style="bold"), Text(str(len(msgs))))
+                    t.add_row(Text("Routing", style="bold"),
+                              Text(("on • priority=" + priority) if router else "off"))
+                    t.add_row(Text("Checkpointer", style="bold"), Text(str(db_path)))
+                    t.add_row(Text("Thread", style="bold"), Text(deep_thread_id))
+                    console.print(Panel(t, title="/stats", border_style="cyan", box=box.ROUNDED))
+                continue
 
             coerced = _maybe_coerce_img_command(user)
+            user_turns += 1
 
             pending_router_panel: Optional[Panel] = None
             pending_output_panel: Optional[Panel] = None
@@ -1458,7 +1599,10 @@ def chat(
                                 "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
                             )
                         })
-                    deep_config = {"configurable": {"recursion_limit": prio_limits.get(priority, 45)}}
+                    deep_config = {
+                        "recursion_limit": prio_limits.get(priority, 45),
+                        "configurable": {"thread_id": deep_thread_id},
+                    }
 
                     if not deep_verbose:
                         output: str = ""
@@ -1466,6 +1610,8 @@ def chat(
                             res = agent.invoke({"messages": msgs}, config=deep_config)
                             if isinstance(res, dict) and "messages" in res:
                                 msgs = res["messages"]
+                                last_todos = res.get("todos") or last_todos
+                                last_files = res.get("files") or last_files
                             else:
                                 output = "Error: Invalid response format from agent."
                         except Exception as e:
@@ -1484,11 +1630,14 @@ def chat(
                                     res = agent.invoke({"messages": msgs}, config=deep_config)
                                     if isinstance(res, dict) and "messages" in res:
                                         msgs = res["messages"]
+                                        last_todos = res.get("todos") or last_todos
+                                        last_files = res.get("files") or last_files
                                     last_content = _extract_last_content(msgs).strip()
                                 except Exception as e:
                                     last_content = f"Agent failed after retry: {e}"
                             output = last_content or "No response generated."
                         pending_output_panel = _panel_agent_output(output)
+                        ai_turns += 1
 
                 else:
                     try:
@@ -1522,6 +1671,8 @@ def chat(
                     res = agent.invoke({"messages": msgs}, config=deep_config)
                     if isinstance(res, dict) and "messages" in res:
                         msgs = res["messages"]
+                        last_todos = res.get("todos") or last_todos
+                        last_files = res.get("files") or last_files
                         output = _extract_last_content(msgs).strip() or "No response generated."
                     else:
                         output = "Error: Invalid response format from agent."
@@ -1530,6 +1681,7 @@ def chat(
                               if "recursion" in str(e).lower()
                               else f"Agent error: {e}")
                 pending_output_panel = _panel_agent_output(output)
+                ai_turns += 1
 
             if pending_output_panel:
                 console.print(pending_output_panel)
@@ -1542,8 +1694,8 @@ def chat(
                     history[:] = history[-20:]
 
     except (KeyboardInterrupt, EOFError):
-        console.print("\n[bold]Goodbye![/bold]")
         return "quit"
+
 
 @app.command(help="Implement a feature end-to-end (plan → search → edit → verify). Supports --apply and optional --test-cmd (e.g., 'pytest -q').")
 def feature(
@@ -1681,7 +1833,6 @@ def analyze(
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panel."),
 ):
-    # Ensure env for this project
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
     priority = (priority or "balanced").lower()
@@ -1723,8 +1874,15 @@ def analyze(
         agent = cached
 
     with _show_loader():
-        res = agent.invoke({"messages": [{"role": "user", "content": request}]},
-                           config={"configurable": {"recursion_limit": 45}})
+        # res = agent.invoke({"messages": [{"role": "user", "content": request}]},
+        #                    config={"configurable": {"recursion_limit": 45}})
+        res = agent.invoke(
+            {"messages": [{"role": "user", "content": request}]},
+            config={
+                "recursion_limit": 45,
+                "configurable": {"thread_id": _thread_id_for(project_dir, "analyze")},
+            },
+        )
         output = (
             _extract_last_content(res.get("messages", [])).strip()
             if isinstance(res, dict) and "messages" in res
