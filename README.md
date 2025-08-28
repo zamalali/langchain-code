@@ -6,112 +6,73 @@
 
 ---
 
-LangCode is a terminal-first, agentic coding tool designed to deeply understand your codebase and automate coding tasks. It seamlessly integrates the best features of Google's Gemini CLI and Anthropic's Claude Code into a unified and extensible workflow, enabling you to navigate code, plan changes, apply safe diffs, run tests, and manage Git operations directly from the command line. LangCode empowers developers to focus on high-level problem-solving by automating repetitive and time-consuming coding tasks.
+LangCode is your terminal-first AI assistant for coding. It helps you understand, modify, and improve your codebase, all from the command line. Forget juggling multiple tools – LangCode puts everything you need at your fingertips.
 
 ## At a glance
 
-* **Terminal-first developer UX:** Provides a seamless command-line experience for interacting with your codebase.
-* **Multi-provider LLM routing:** Intelligently routes requests to the most appropriate Large Language Model (LLM) provider (Anthropic, Google Gemini) based on task requirements.
-* **Safe, reviewable edits by diff:** Ensures code changes are safe and easily reviewable by generating explicit diffs and requiring confirmation before applying modifications.
-* **Long-horizon “Deep Agent”:** Enables the execution of complex, multi-step tasks that require sustained reasoning and planning.
-* **ReAct loop:** Facilitates quick chats, code lookups, and targeted edits through an interactive Read-Act-Observe loop.
-* **Built-in tools:** Offers a comprehensive suite of built-in tools (fs, grep, glob, cmds, tests) and supports Model Context Protocol (MCP) extension for enhanced functionality.
-* **DEEP AUTOPILOT mode:** Provides an optional fully autonomous mode for end-to-end task execution with minimal human intervention.
+*   **Interactive Launcher:** Start with `langcode` and configure everything through a user-friendly interface.
+*   **AI-Powered Code Understanding:** Deeply analyzes your code to answer questions and generate insights.
+*   **Automated Coding Tasks:** Implements features, fixes bugs, and refactors code with minimal effort.
+*   **Safe and Reviewable Changes:** Generates clear diffs for every modification, ensuring you stay in control.
+*   **Multi-LLM Support:** Seamlessly integrates with Google Gemini and Anthropic Claude, choosing the best model for the task.
+*   **Customizable Instructions:** Tailor the agent's behavior with project-specific rules and guidelines.
 
-## Installation
-
-Requirements:
-
-* Python 3.10+
-* macOS, Linux, or Windows (WSL recommended)
-
-Install from PyPI:
-
-```bash
-pip install langchain-code
-```
-
-Verify:
-
-```bash
-langcode --help
-```
-
-## Quick start
+## Get Started
 
 1.  **Installation:**
     ```bash
     pip install langchain-code
     ```
 
-2.  **Set up API keys:**
-    Create a `.env` file in your project root and add your API keys for Anthropic and/or Google Gemini:
-    ```env
-    ANTHROPIC_API_KEY="sk-ant-..."
-    GOOGLE_API_KEY="AIzaSy..."
-    ```
+2.  **Launch the Interactive Launcher:**
+    Just type `langcode` in your terminal. This opens a menu where you can configure your session.
 
-3.  **Start an interactive chat session:**
-    ```bash
-    langcode chat
-    ```
+## The Interactive Launcher
 
-4.  **Implement a feature:**
-    ```bash
-    langcode feature "Add a /health endpoint to the main API" --test-cmd "pytest -q"
-    ```
+LangCode's interactive launcher is the central hub for all your coding tasks. It allows you to:
 
-5.  **Fix a bug:**
-    ```bash
-    langcode fix "Login button unresponsive on main page" --log errors.log
-    ```
+*   **Choose a Command:** Select what you want to do: `chat`, `feature`, `fix`, or `analyze`.
+*   **Configure the Engine:** Pick between `react` (fast and efficient) and `deep` (for complex tasks).
+*   **Enable Smart Routing:** Let LangCode automatically select the best LLM for each task.
+*   **Set the Priority:** Optimize for `cost`, `speed`, or `quality` when using smart routing.
+*   **Manage Autopilot:** Enable fully autonomous mode for the Deep Agent (use with caution!).
+*   **Toggle Apply Mode:** Allow LangCode to automatically write changes to your file system.
+*   **Select an LLM:** Explicitly choose between Anthropic and Google Gemini, or let LangCode decide.
+*   **Specify the Project Directory:** Tell LangCode where your codebase is located.
+*   **Edit Environment Variables:** Quickly add or modify API keys and other settings in your `.env` file.
+*   **Customize Instructions:** Open the `.langcode/langcode.md` file to add project-specific guidelines.
+*   **Configure MCP Servers:** Set up Model Context Protocol servers for advanced tool integration.
+*   **Define a Test Command:** Specify a command to run after making changes (e.g., `pytest -q`).
 
-6.  **Run a complex task with the Deep Agent:**
-    ```bash
-    langcode deepagent "Implement JWT auth with refresh tokens and tests"
-    ```
+## Core Commands
 
-7.  **Select an LLM provider explicitly:**
-    ```bash
-    langcode chat --llm gemini
-    # or
-    langcode chat --llm anthropic
-    ```
+While the interactive launcher is the recommended way to use LangCode, you can also use the following commands directly from the terminal:
 
-8.  **Run without confirmation (use with caution):**
-    ```bash
-    langcode feature "Add dark mode toggle" --apply
-    ```
+*   `langcode chat`: Starts an interactive chat session.
+*   `langcode feature`: Implements a new feature.
+*   `langcode fix`: Fixes a bug.
+*   `langcode analyze`: Analyzes the codebase.
+*   `langcode instr`: Opens the project instructions file.
 
-## Authentication & configuration
+See the "Commands" section below for more details.
 
-LangCode reads provider credentials from a `.env` in your project root (or environment variables).
+## In-Chat Commands
 
-Create `.env`:
+During a chat session, you can use the following forward-slash commands:
 
-```bash
-touch .env
-```
+*   `/clear`: Clears the chat history.
+*   `/select`: Returns to the interactive launcher.
+*   `/exit` or `/quit`: Ends the chat session.
+*   `/help`: Displays a help message.
+*   `/memory` or `/stats`: Shows memory and statistics about the current session (deep mode only).
 
-Populate with keys for the providers you use:
+## Configuration
 
-```env
-# Anthropic
-ANTHROPIC_API_KEY="sk-ant-..."
+LangCode uses a few key files for configuration:
 
-# Google Gemini (API or OAuth-backed key)
-GOOGLE_API_KEY="AIzaSy..."
-```
-
-LLM selection:
-
-* Automatic: LangCode picks based on available keys and router policy.
-* Explicit: `--llm gemini` or `--llm anthropic`.
-
-Project settings (optional):
-
-* `./.langcode/mcp.json` – register MCP servers (see below)
-* `./.langcode/` – put project‑specific context or defaults
+*   `.env`: Stores API keys and other environment variables. You can create and edit this file directly from the interactive launcher.
+*   `.langcode/langcode.md`: Contains project-specific instructions for the agent. Edit this file to tailor LangCode's behavior to your codebase.
+*   `.langcode/mcp.json`: Configures Model Context Protocol (MCP) servers for advanced tool integration.
 
 ## Commands
 
@@ -221,6 +182,7 @@ This command opens the `.langcode/langcode.md` file in your default editor.
 
 
 ## Workflows
+
 
 * `auto` – DEEP AUTOPILOT end‑to‑end execution
 * `bug_fix` – guided diagnosis → patch → verify
