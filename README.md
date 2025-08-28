@@ -1,6 +1,7 @@
 <div align="center">
   <img src="assets/logo.png" alt="LangCode Logo" width="180" />
   <h1><b>LangCode</b></h1>
+  <p style="font-size: 1.2em; color: #888; font-style: italic;">The only CLI you'll ever need.</p>
   <p style="font-size: 1.5em; font-style: italic;">Your AI coding assistant, designed for developers.</p>
 </div>
 
