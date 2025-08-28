@@ -43,7 +43,7 @@ LangCode is an AI-powered coding assistant designed to streamline your developme
     Just type `langcode` in your terminal and hit Enter. This opens a user-friendly interactive menu where you can easily configure your session and access various functionalities without needing to remember specific command-line arguments. See the image below for a preview:
 
     <div align="center">
-        <img src="assets/cmd.png" alt="LangCode Home Screen" width="70%"/>
+        <img src="assets/cmd.png" alt="LangCode Home Screen" width="90%"/>
     </div>
 
 
