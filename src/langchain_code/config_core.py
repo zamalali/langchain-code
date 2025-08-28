@@ -6,6 +6,23 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 load_dotenv()
+def _normalize_gemini_env() -> None:
+    """
+    Make Gemini work regardless of whether the user set GEMINI_API_KEY or GOOGLE_API_KEY.
+    LangChain's ChatGoogleGenerativeAI reads GOOGLE_API_KEY by default, so mirror whichever
+    one is present into the other if it's missing.
+    """
+    gemini = os.environ.get("GEMINI_API_KEY")
+    google = os.environ.get("GOOGLE_API_KEY")
+
+    if gemini and not google:
+        os.environ["GOOGLE_API_KEY"] = gemini
+
+    if google and not gemini:
+        os.environ["GEMINI_API_KEY"] = google
+
+_normalize_gemini_env()
+
 
 @dataclass
 class ModelConfig:
@@ -323,8 +340,14 @@ def _cached_chat_model(provider: str, model_name: str, temperature: float = 0.2)
         from langchain_anthropic import ChatAnthropic
         m = ChatAnthropic(model=model_name, temperature=temperature)
     elif provider == "gemini":
+        gkey = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not gkey:
+            raise RuntimeError(
+                "Missing GOOGLE_API_KEY / GEMINI_API_KEY. "
+                "Set one of these in your .env (same folder you chose as Project)."
+            )
         from langchain_google_genai import ChatGoogleGenerativeAI
-        m = ChatGoogleGenerativeAI(model=model_name, temperature=temperature)
+        m = ChatGoogleGenerativeAI(model=model_name, temperature=temperature, google_api_key=gkey, transport="rest")
     else:
         raise ValueError(f"Unknown provider: {provider}")
     _MODEL_CACHE[key] = m

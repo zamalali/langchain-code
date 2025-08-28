@@ -29,3 +29,4 @@ node_modules/
 /.ipynb_checkpoints
 test.py
 langchain_code.egg-info/
+todos
