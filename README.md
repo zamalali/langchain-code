@@ -1,21 +1,22 @@
 <div align="center">
   <img src="assets/logo.png" alt="LangCode Logo" width="180" />
   <h1><b>LangCode</b></h1>
-  <p style="font-size: 1.5em; font-style: italic; color: #3498db;">The only CLI you need.</p>
+  <p style="font-size: 1.5em; font-style: italic;">Your AI coding assistant, designed for developers.</p>
 </div>
 
 ---
 
-LangCode is your terminal-first AI assistant for coding. It helps you understand, modify, and improve your codebase, all from the command line. Forget juggling multiple tools – LangCode puts everything you need at your fingertips.
+LangCode is an AI-powered coding assistant designed to streamline your development workflow. Interact with your codebase, implement new features, fix bugs, and gain insights, all from a single, intuitive interface.
 
-## At a glance
+## Key Features
 
 *   **Interactive Launcher:** Start with `langcode` and configure everything through a user-friendly interface.
 *   **AI-Powered Code Understanding:** Deeply analyzes your code to answer questions and generate insights.
 *   **Automated Coding Tasks:** Implements features, fixes bugs, and refactors code with minimal effort.
 *   **Safe and Reviewable Changes:** Generates clear diffs for every modification, ensuring you stay in control.
-*   **Multi-LLM Support:** Seamlessly integrates with Google Gemini and Anthropic Claude, choosing the best model for the task.
-*   **Customizable Instructions:** Tailor the agent's behavior with project-specific rules and guidelines.
+*   **Multi-LLM Support:** Seamlessly integrates with Google Gemini and Anthropic Claude, intelligently routing to the best model for the task.
+*   **Customizable Instructions:** Tailor the agent's behavior with project-specific rules and guidelines using `.langcode/langcode.md`.
+*   **Extensible with MCP:** Integrate custom tools via Model Context Protocol (MCP).
 
 ## Get Started
 
@@ -27,9 +28,9 @@ LangCode is your terminal-first AI assistant for coding. It helps you understand
 2.  **Launch the Interactive Launcher:**
     Just type `langcode` in your terminal. This opens a menu where you can configure your session.
 
-## The Interactive Launcher
+## Interactive Mode
 
-LangCode's interactive launcher is the central hub for all your coding tasks. It allows you to:
+The interactive mode serves as the central hub for all your coding tasks. It allows you to:
 
 *   **Choose a Command:** Select what you want to do: `chat`, `feature`, `fix`, or `analyze`.
 *   **Configure the Engine:** Pick between `react` (fast and efficient) and `deep` (for complex tasks).
@@ -41,8 +42,11 @@ LangCode's interactive launcher is the central hub for all your coding tasks. It
 *   **Specify the Project Directory:** Tell LangCode where your codebase is located.
 *   **Edit Environment Variables:** Quickly add or modify API keys and other settings in your `.env` file.
 *   **Customize Instructions:** Open the `.langcode/langcode.md` file to add project-specific guidelines.
-*   **Configure MCP Servers:** Set up Model Context Protocol servers for advanced tool integration.
+*   **Configure MCP Servers:** Set up Model Context Protocol (MCP) servers for advanced tool integration.
+*   **Edit Language Code:** Modify the core language code directly from the main window.
+*   **Specify MCP Servers:** Configure Model Context Protocol (MCP) servers for advanced tool integration.
 *   **Define a Test Command:** Specify a command to run after making changes (e.g., `pytest -q`).
+*   **Access Help:** Press `h` to toggle help and `q` or `Esc` to quit.
 
 ## Core Commands
 
@@ -56,17 +60,18 @@ While the interactive launcher is the recommended way to use LangCode, you can a
 
 See the "Commands" section below for more details.
 
-## In-Chat Commands
+## Slash Commands
 
-During a chat session, you can use the following forward-slash commands:
+You can use the following slash commands during a chat session:
 
 *   `/clear`: Clears the chat history.
 *   `/select`: Returns to the interactive launcher.
 *   `/exit` or `/quit`: Ends the chat session.
 *   `/help`: Displays a help message.
 *   `/memory` or `/stats`: Shows memory and statistics about the current session (deep mode only).
+*   `/env`: Allows you to create an environment if one doesn't exist.
 
-## Configuration
+## Configuration & Files
 
 LangCode uses a few key files for configuration:
 
@@ -74,7 +79,7 @@ LangCode uses a few key files for configuration:
 *   `.langcode/langcode.md`: Contains project-specific instructions for the agent. Edit this file to tailor LangCode's behavior to your codebase.
 *   `.langcode/mcp.json`: Configures Model Context Protocol (MCP) servers for advanced tool integration.
 
-## Commands
+## Command-Line Interface (CLI) and Usage
 
 LangCode provides a set of commands to interact with your codebase. Here's a breakdown of each command and its usage:
 
@@ -181,20 +186,20 @@ langcode instr
 This command opens the `.langcode/langcode.md` file in your default editor.
 
 
-## Workflows
+## Reasoning Engines & Workflows
 
 
 * `auto` – DEEP AUTOPILOT end‑to‑end execution
 * `bug_fix` – guided diagnosis → patch → verify
 * `feature_impl` – plan → small diffs → test → review
 
-## How it works
+## Under the Hood
 
 ### Hybrid Intelligent LLM Router
 
 A rule‑augmented, feedback‑aware router picks the right model for each task based on complexity, context size, latency, and cost. Use `--llm` to override.
 
-### Agent architectures
+#### Agent Architectures
 
 ## Agent architectures
 
@@ -222,7 +227,7 @@ The Deep Agent is a structured, multi-agent system for complex work. It uses a L
 
 Run fully autonomously with a single final report. Combine with tests for safe, end‑to‑end changes.
 
-## Built‑in tools
+## Built-in Tools
 
 * `list_dir`, `glob`, `grep` – fast project navigation
 * `read_file`, `edit_by_diff`, `write_file` – safe, reviewable edits
@@ -255,7 +260,7 @@ Use the `/img` directive to analyze images alongside your prompt:
 /img assets/screenshot.png :: What’s wrong with this UI?
 ```
 
-## Safety & control
+## Safety and Control
 
 * Preview all diffs and commands before execution
 * Explicit confirmation gates by default
@@ -288,7 +293,7 @@ Multi‑step change:
 deepagent "Introduce feature flags with config, implement two flags, add tests"
 ```
 
-## Troubleshooting
+## Troubleshooting & Debugging
 
 * Run with `--verbose` to inspect tool calls and decisions
 * Ensure provider keys are present in `.env`
