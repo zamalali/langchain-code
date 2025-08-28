@@ -1,11 +1,24 @@
-<div align="center">
-  <img src="assets/logo.png" alt="LangCode Logo" width="180" />
-  <h1><b>LangCode</b></h1>
-  <p style="font-size: 1.2em; color: #888; font-style: italic;">The only CLI you'll ever need.</p>
-  <p style="font-size: 1.5em; font-style: italic;">Your AI coding assistant, designed for developers.</p>
+<div align="center" style="font-family: 'Segoe UI', Helvetica, Arial, sans-serif; margin-top: 20px;">
+  <img src="assets/logo.png" alt="LangCode Logo" width="180" style="margin-bottom: 10px;" />
+  <h1 style="margin: 0; font-size: 2.8em; font-weight: 800; color: #222; letter-spacing: -1px;">
+    LangCode
+  </h1>
+  <p style="
+    margin-top: 8px;
+    font-size: 1.4em;
+    font-weight: 600;
+    color: #6C63FF;
+    font-style: italic;
+    letter-spacing: 1px;
+    background: linear-gradient(90deg, #6C63FF, #FF6584);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 0px 2px 6px rgba(0,0,0,0.2);
+  ">
+    The only CLI you'll ever need!
+  </p>
 </div>
 
----
 
 LangCode is an AI-powered coding assistant designed to streamline your development workflow. Interact with your codebase, implement new features, fix bugs, and gain insights, all from a single, intuitive interface.
 
