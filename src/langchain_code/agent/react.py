@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import BaseTool
-
+from langgraph.types import Checkpointer
 from ..config_core import get_model
 from ..mcp_loader import get_mcp_tools
 from ..tools.fs_local import (
@@ -154,6 +154,7 @@ def build_deep_agent(
     test_cmd: Optional[str] = None,
     instruction_seed: Optional[str] = None,
     subagents: Optional[list] = None,
+    checkpointer: Optional[Checkpointer] = None,
     *,
     llm: Optional[Any] = None,
 ):
@@ -165,5 +166,6 @@ def build_deep_agent(
         subagents=subagents or [],
         apply=apply,
         test_cmd=test_cmd,
+        checkpointer=checkpointer,
         llm=llm,
     )

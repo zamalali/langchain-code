@@ -8,7 +8,7 @@ from typing import Any, List, Optional, Union
 from langgraph.prebuilt import create_react_agent
 from langgraph.types import Checkpointer
 from langchain_core.tools import BaseTool
-
+from langgraph.checkpoint.memory import MemorySaver
 from ..agent.state import DeepAgentState
 from ..agent.subagents import SubAgent, create_task_tool
 from ..config_core import get_model
@@ -97,7 +97,7 @@ def create_deep_agent(
     apply: bool = False,
     test_cmd: Optional[str] = None,
     state_schema=DeepAgentState,
-    checkpointer: Optional[Checkpointer] = None,
+    checkpointer: Optional[Any] = None,
     llm: Optional[Any] = None,
 ):
     """
@@ -110,6 +110,10 @@ def create_deep_agent(
     tools = asyncio.run(_load_dynamic_tools(project_dir, model, apply, test_cmd))
     task_tool = create_task_tool(tools, instructions or BASE_SYSTEM, subagents or [], model, state_schema)
     all_tools: List[Union[BaseTool, Any]] = [*tools, task_tool]
+
+
+    if checkpointer is None:
+        checkpointer = MemorySaver()
 
     graph = create_react_agent(
         model,
