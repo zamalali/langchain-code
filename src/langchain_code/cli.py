@@ -1017,7 +1017,7 @@ def _info_panel_for(field: str) -> Panel:
         "Priority": "[bold]Routing priority[/bold]: [cyan]balanced[/cyan] | cost | speed | quality – influences model choice.",
         "Autopilot": "[bold]Autopilot[/bold] (deep chat only): Agent plans and executes end-to-end [italic]without asking questions[/italic]. It still uses tools safely, but won't seek confirmation.",
         "Apply": "[bold]Apply[/bold] (feature/fix only): If ON, the agent is allowed to [bold]write files[/bold] and [bold]run commands[/bold]. If OFF, it proposes diffs and commands but does not execute them.",
-        "LLM": "[bold]LLM provider[/bold]: Explicitly force [cyan]anthropic[/cyan] or [cyan]gemini[/cyan]. Leave blank to follow router/defaults.",
+        "LLM": "[bold]LLM provider[/bold]: Explicitly force [cyan]anthropic[/cyan], [cyan]gemini[/cyan], [cyan]openai[/cyan], or [cyan]ollama[/cyan]. Leave blank to follow router/defaults.",
         "Project": "[bold]Project directory[/bold]: Where the agent operates.",
         "Custom Instructions": "[bold].langcode/langcode.md[/bold]: Project-specific instructions appended to the base prompt. Press Enter to open Vim (or $VISUAL/$EDITOR). Exit with :wq.",
         "MCP Config": "[bold].langcode/mcp.json[/bold]: Configure MCP servers used by the agent/tools. Press Enter to open Vim (or $VISUAL/$EDITOR). Exit with :wq. File is created if missing.",
@@ -1028,6 +1028,34 @@ def _info_panel_for(field: str) -> Panel:
     }
     text = info_map.get(field, "Use ↑/↓ to move, ←/→ to change values, Enter to start, h for help, q to quit.")
     return Panel(Text.from_markup(text), title="Info", border_style="green", box=box.ROUNDED)
+
+def _list_ollama_models() -> list[str]: 
+    try: 
+        p = subprocess.run(["ollama", "list", "--format", "json"], capture_output=True, text=True, timeout=2) 
+        if p.returncode == 0 and p.stdout.strip(): 
+            try: 
+                data = json.loads(p.stdout) 
+                if isinstance(data, list): 
+                    names = [] 
+                    for it in data: 
+                        n = (it.get("name") or it.get("model") or "").strip() 
+                        if n: 
+                            names.append(n.split(":")[0]) 
+                    return list(dict.fromkeys(names)) 
+            except Exception: 
+                pass 
+        p2 = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=2) 
+        if p2.returncode == 0 and p2.stdout: 
+            lines = [ln.strip() for ln in p2.stdout.splitlines() if ln.strip()] 
+            out = [] 
+            for ln in lines[1:]: 
+                name = ln.split()[0] 
+                if name: 
+                    out.append(name.split(":")[0]) 
+            return list(dict.fromkeys(out)) 
+    except Exception: 
+        pass 
+    return []
 
 def _help_content() -> Panel:
     """
@@ -1074,7 +1102,7 @@ def _help_content() -> Panel:
     cmds = Panel(cmd_tbl, title="Commands", border_style="cyan", box=box.ROUNDED, padding=(1, 1), expand=True)
 
     global_opts = opts_card("Global options", [
-        ("--llm",              "Force provider (anthropic | gemini)."),
+        ("--llm",              "Force provider (anthropic | gemini | openai | ollama)."),
         ("--router",           "Smart model routing per prompt."),
         ("--priority",         "balanced | cost | speed | quality (default: balanced)."),
         ("--verbose",          "Show model-selection panel when routing."),
@@ -1159,7 +1187,8 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
     llm_val = state["llm"] or "(auto)"
     proj_val = str(state["project_dir"])
     tests_val = state["test_cmd"] or "(none)"
-
+    ollama_names = _list_ollama_models() if state["llm"] == "ollama" else []
+    start_enabled = not (state["llm"] == "ollama" and not ollama_names)
     md_path = (state["project_dir"] / LANGCODE_DIRNAME / LANGCODE_FILENAME)
     if md_path.exists():
         try:
@@ -1187,7 +1216,7 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
         ("Custom Instructions", instr_val, True),
         ("MCP Config", mcp_val, True),  
         ("Tests", tests_val, state["command"] in ("feature", "fix")),
-        ("Start", "Press Enter", True),
+        ("Start", "Press Enter", start_enabled),
     ]
 
     for idx, (label, value, enabled) in enumerate(labels):
@@ -1201,8 +1230,24 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
         padding=(1, 2),
     )
 
-    right_panel = _info_panel_for(labels[focus_index][0])
+    field_name = labels[focus_index][0] 
+    right_panel = _info_panel_for(field_name) 
+ 
+    if field_name == "LLM" and state["llm"] == "ollama": 
+        names = _list_ollama_models() 
+        body = Text() 
+        body.append("Ollama models detected on this machine:\n", style="bold") 
+        if names: 
+            for i, n in enumerate(names, 1):
+                mark = "  " if n != state.get("ollama_model") else "✓ "
+                body.append(f"{mark}{i}. {n}\n")
+            body.append("\nPress Enter on this field to choose a model.\n", style="dim")
+        else: 
+            body.append(" (None found)\n", style="yellow") 
+            body.append(" Tip: run `ollama pull llama3.1` to get a default model.\n", style="dim") 
+            body.append("\n[Start is disabled until a model is installed.]\n", style="dim")
 
+        right_panel = Panel(body, title="Ollama", border_style="cyan", box=box.ROUNDED, padding=(1,1))
     console.print(Group(left_panel, right_panel))
 
     footer_items = [
@@ -1250,7 +1295,7 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if state["command"] in ("feature", "fix"):
                 state["apply"] = not state["apply"]
         elif field == "LLM":
-            opts = [None, "anthropic", "gemini"]
+            opts = [None, "anthropic", "gemini", "openai", "ollama"]
             cur = state["llm"]
             i = (opts.index(cur) + direction) % len(opts)
             state["llm"] = opts[i]
@@ -1314,7 +1359,48 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 return state
             toggle(field, +1)
             continue
+        if key == _Key.ENTER:
+            field = fields_order[focus_index]
 
+            if field in ("Project", "Environment", "Custom Instructions", "MCP Config", "Tests"):
+                toggle(field, +1)
+                continue
+
+            if field == "LLM" and state["llm"] == "ollama":
+                names = _list_ollama_models()
+                if not names:
+                    console.print(Panel.fit(Text("No Ollama models detected. Install one (e.g., `ollama pull llama3.1`).", style="bold yellow"), border_style="yellow"))
+                    console.input("Press Enter to continue...")
+                    continue
+                if len(names) == 1:
+                    state["ollama_model"] = names[0]
+                    os.environ["LANGCODE_OLLAMA_MODEL"] = names[0]
+                    console.print(Panel.fit(Text(f"Selected: {names[0]}", style="green"), border_style="green"))
+                    console.input("Press Enter to continue...")
+                    continue
+                console.print(Panel.fit(Text("Select an Ollama model by number:", style="bold"), border_style="cyan"))
+                for i, n in enumerate(names, 1):
+                    console.print(f"  {i}. {n}")
+                choice = console.input("Your choice: ").strip()
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(names):
+                        state["ollama_model"] = names[idx]
+                        os.environ["LANGCODE_OLLAMA_MODEL"] = names[idx]
+                        console.print(Panel.fit(Text(f"Selected: {names[idx]}", style="green"), border_style="green"))
+                    else:
+                        console.print(Panel.fit(Text("Invalid selection.", style="yellow"), border_style="yellow"))
+                except Exception:
+                    console.print(Panel.fit(Text("Invalid input.", style="yellow"), border_style="yellow"))
+                console.input("Press Enter to continue...")
+                continue
+
+            if field == "Start":
+                if state["llm"] == "ollama" and not _list_ollama_models():
+                    console.print(Panel.fit(Text("Cannot start: no Ollama models installed.", style="bold red"), border_style="red"))
+                    console.input("Press Enter to continue...")
+                    continue
+                return state
 
 def _default_state() -> Dict[str, Any]:
     return {
@@ -1327,6 +1413,7 @@ def _default_state() -> Dict[str, Any]:
         "llm": None,    
         "project_dir": Path.cwd(),
         "test_cmd": None,
+        "ollama_model": None,
     }
 
 def _dispatch_from_state(chosen: Dict[str, Any]) -> Optional[str]:
@@ -1337,6 +1424,9 @@ def _dispatch_from_state(chosen: Dict[str, Any]) -> Optional[str]:
       - "select" to return to launcher
       - None to simply continue
     """
+    if chosen.get("llm") == "ollama" and not _list_ollama_models(): 
+        console.print(Panel.fit(Text("Cannot start: no Ollama models installed.", style="bold red"), border_style="red")) 
+        return None 
     cmd = chosen["command"]
     if cmd == "chat":
         return chat(
@@ -1430,7 +1520,7 @@ def _root(ctx: typer.Context):
 
 @app.command(help="Open an interactive chat with the agent. Modes: react | deep (default: react). Use --auto in deep mode for full autopilot (plan+act with no questions).")
 def chat(
-    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
+    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini | openai | ollama"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
     mode: str = typer.Option("react", "--mode", help="react | deep"),
     auto: bool = typer.Option(False, "--auto", help="Autonomy mode: plan+act with no questions (deep mode only)."),
@@ -1471,11 +1561,16 @@ def chat(
 
     static_agent = None
     if not router:
+        chosen_llm = get_model(provider) if provider in {"openai", "ollama"} else None
         if mode == "deep":
             seed = AUTO_DEEP_INSTR if auto else None
-            static_agent = build_deep_agent(provider=provider, project_dir=project_dir, instruction_seed=seed, apply=auto)
+            static_agent = _build_deep_agent_with_optional_llm(
+                provider=provider, project_dir=project_dir, llm=chosen_llm, instruction_seed=seed, apply=auto
+            )
         else:
-            static_agent = build_react_agent(provider=provider, project_dir=project_dir)
+            static_agent = _build_react_agent_with_optional_llm(
+                provider=provider, project_dir=project_dir, llm=chosen_llm
+            )
 
     prio_limits = {"speed": 30, "cost": 35, "balanced": 45, "quality": 60}
 
@@ -1706,7 +1801,7 @@ def chat(
 @app.command(help="Implement a feature end-to-end (plan → search → edit → verify). Supports --apply and optional --test-cmd (e.g., 'pytest -q').")
 def feature(
     request: str = typer.Argument(..., help='e.g. "Add a dark mode toggle in settings"'),
-    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
+    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini | openai | ollama"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
     test_cmd: Optional[str] = typer.Option(None, "--test-cmd", help='e.g. "pytest -q" or "npm test"'),
     apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
@@ -1714,7 +1809,6 @@ def feature(
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panel."),
 ):
-    # Ensure env for this project
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
     priority = (priority or "balanced").lower()
@@ -1745,6 +1839,8 @@ def feature(
     model_key = (model_info or {}).get("langchain_model_name", "default")
     cache_key = ("react", provider, model_key, str(project_dir.resolve()), False)
     cached = _agent_cache_get(cache_key)
+    if not router and provider in {"openai", "ollama"}:
+        chosen_llm = get_model(provider)
     if cached is None:
         agent = _build_react_agent_with_optional_llm(
             provider=provider,
@@ -1767,7 +1863,7 @@ def feature(
 def fix(
     request: Optional[str] = typer.Argument(None, help='e.g. "Fix crash on image upload"'),
     log: Optional[Path] = typer.Option(None, "--log", exists=True, help="Path to error log or stack trace."),
-    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
+    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini | openai | ollama"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
     test_cmd: Optional[str] = typer.Option(None, "--test-cmd", help='e.g. "pytest -q"'),
     apply: bool = typer.Option(False, "--apply", help="Apply writes and run commands without interactive confirm."),
@@ -1810,6 +1906,8 @@ def fix(
     model_key = (model_info or {}).get("langchain_model_name", "default")
     cache_key = ("react", provider, model_key, str(project_dir.resolve()), False)
     cached = _agent_cache_get(cache_key)
+    if not router and provider in {"openai", "ollama"}:
+        chosen_llm = get_model(provider)
     if cached is None:
         agent = _build_react_agent_with_optional_llm(
             provider=provider,
@@ -1831,7 +1929,7 @@ def fix(
 @app.command(help="Analyze any codebase and generate insights (deep agent).")
 def analyze(
     request: str = typer.Argument(..., help='e.g. "What are the main components of this project?"'),
-    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini"),
+    llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini | openai | ollama"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
     router: bool = typer.Option(False, "--router", help="Auto-route to the most efficient LLM for this request."),
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
@@ -1866,6 +1964,8 @@ def analyze(
     model_key = (model_info or {}).get("langchain_model_name", "default")
     cache_key = ("deep", provider, model_key, str(project_dir.resolve()), False)
     cached = _agent_cache_get(cache_key)
+    if not router and provider in {"openai", "ollama"}:
+        chosen_llm = get_model(provider)
     if cached is None:
         agent = _build_deep_agent_with_optional_llm(
             provider=provider,

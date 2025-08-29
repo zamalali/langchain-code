@@ -23,6 +23,8 @@ dependencies = [
     "langchain-tavily>=0.1.0",
     "deepagents>=0.0.3",
     "genai-processors>=1.1.0",
+    "langchain-openai>=0.2.0",
+    "langchain-ollama>=0.1.0",
 ]
 
 [project.scripts]
