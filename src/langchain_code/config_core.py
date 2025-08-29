@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
 import re
+import json
+import subprocess
 from typing import Optional, Dict, Any, Tuple, Dict as _Dict, Any as _Any
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -191,7 +193,48 @@ class IntelligentLLMRouter:
             )
         ]
 
-    # ---------- Router internals ----------
+        self.openai_models = [
+            ModelConfig(
+                name="GPT-4o Mini",
+                input_cost_per_million=0.15,
+                output_cost_per_million=0.60,
+                capabilities="Fast + inexpensive general model",
+                latency_tier=2,
+                reasoning_strength=7,
+                context_window=200_000,
+                provider="openai",
+                model_id="gpt-4o-mini",
+                langchain_model_name="gpt-4o-mini",
+            ),
+            ModelConfig(
+                name="GPT-4o",
+                input_cost_per_million=5.00,
+                output_cost_per_million=15.00,
+                capabilities="Higher quality multimodal/chat",
+                latency_tier=3,
+                reasoning_strength=9,
+                context_window=200_000,
+                provider="openai",
+                model_id="gpt-4o",
+                langchain_model_name="gpt-4o",
+            ),
+        ]
+        self.ollama_models = [ 
+            ModelConfig( 
+                name="Llama 3.1 (Ollama)", 
+                input_cost_per_million=0.0, 
+                output_cost_per_million=0.0, 
+                capabilities="Local default via Ollama", 
+                latency_tier=2, 
+                reasoning_strength=7, 
+                context_window=128_000, 
+                provider="ollama", 
+                model_id="llama3.1", 
+                langchain_model_name="llama3.1", 
+            ), 
+        ]
+
+
     def extract_features(self, query: str) -> Dict[str, Any]:
         if not query:
             return {
@@ -293,10 +336,13 @@ class IntelligentLLMRouter:
             available = self.gemini_models
         elif provider == "anthropic":
             available = self.anthropic_models
+        elif provider == "openai":
+            available = self.openai_models
+        elif provider == "ollama":
+            available = self.ollama_models
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
-        # 1) Base candidate pool by complexity (speed-friendly unless complex)
         if complexity == "simple":
             candidates = [m for m in available if m.latency_tier <= 2] or available
         elif complexity == "medium":
@@ -332,6 +378,56 @@ _router = IntelligentLLMRouter(prefer_lightweight=True)
 # ---------- lightweight model cache ----------
 _MODEL_CACHE: _Dict[Tuple[str, str, float], _Any] = {}
 
+def _detect_ollama_models() -> list[str]: 
+    """ 
+    Probe local Ollama for installed models (best effort, very fast). 
+    Returns a list of model names (e.g., ["llama3.1", "mistral", ...]). 
+    """ 
+    try: 
+        p = subprocess.run( 
+            ["ollama", "list", "--format", "json"], 
+            capture_output=True, text=True, timeout=2 
+        ) 
+        if p.returncode == 0 and p.stdout.strip(): 
+            try: 
+                data = json.loads(p.stdout) 
+                if isinstance(data, list): 
+                    names = [] 
+                    for it in data: 
+                        # Some versions use "name", some "model" 
+                        n = (it.get("name") or it.get("model") or "").strip() 
+                        if n: 
+                            # Trim tags like ":latest" 
+                            names.append(n.split(":")[0]) 
+                    return list(dict.fromkeys(names)) 
+            except Exception: 
+                pass 
+        p2 = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=2) 
+        if p2.returncode == 0 and p2.stdout: 
+            lines = [ln.strip() for ln in p2.stdout.splitlines() if ln.strip()] 
+            out = [] 
+            for ln in lines[1:]: 
+                name = ln.split()[0] 
+                if name: 
+                    out.append(name.split(":")[0]) 
+            return list(dict.fromkeys(out)) 
+    except Exception: 
+        pass 
+    return [] 
+ 
+def _pick_default_ollama_model() -> str:
+    env_choice = os.getenv("LANGCODE_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL")
+    if env_choice:
+        return env_choice
+
+    names = _detect_ollama_models()
+    if "llama3.1" in names:
+        return "llama3.1"
+    if names:
+        return names[0]
+    return "llama3.1"
+
+
 def _cached_chat_model(provider: str, model_name: str, temperature: float = 0.2):
     key = (provider, model_name, temperature)
     if key in _MODEL_CACHE:
@@ -348,6 +444,16 @@ def _cached_chat_model(provider: str, model_name: str, temperature: float = 0.2)
             )
         from langchain_google_genai import ChatGoogleGenerativeAI
         m = ChatGoogleGenerativeAI(model=model_name, temperature=temperature, google_api_key=gkey, transport="rest")
+    elif provider == "openai":
+        from langchain_openai import ChatOpenAI
+        m = ChatOpenAI(model=model_name, temperature=temperature)
+    elif provider == "ollama": 
+        from langchain_ollama import ChatOllama 
+        base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_HOST") 
+        if base_url: 
+            m = ChatOllama(model=model_name, temperature=temperature, base_url=base_url) 
+        else: 
+            m = ChatOllama(model=model_name, temperature=temperature)
     else:
         raise ValueError(f"Unknown provider: {provider}")
     _MODEL_CACHE[key] = m
@@ -360,10 +466,14 @@ def resolve_provider(cli_llm: str | None) -> str:
             return "anthropic"
         if p in {"gemini", "google"}:
             return "gemini"
+        if p in {"openai", "gpt"}: 
+            return "openai" 
+        if p in {"ollama"}: 
+            return "ollama"
         return p
 
     env = os.getenv("LLM_PROVIDER", "gemini").lower()
-    if env not in {"gemini", "anthropic"}:
+    if env not in {"gemini", "anthropic", "openai", "ollama"}:
         env = "gemini"
     return env
 
@@ -372,6 +482,8 @@ def get_model(provider: str, query: Optional[str] = None, priority: str = "balan
     When no query is given (no router context), return a solid default:
       - anthropic => 'claude-3-7-sonnet-2025-05-14'
       - gemini    => 'gemini-2.0-flash'
+      - openai    => 'gpt-4o-mini'
+      - ollama    => detected default (prefers llama3.1)
     With a query, use the speed-first router with reasoning override and cache the model object.
     """
     if not query:
@@ -379,6 +491,10 @@ def get_model(provider: str, query: Optional[str] = None, priority: str = "balan
             return _cached_chat_model("anthropic", "claude-3-7-sonnet-2025-05-14", 0.2)
         elif provider == "gemini":
             return _cached_chat_model("gemini", "gemini-2.0-flash", 0.2)
+        elif provider == "openai": 
+            return _cached_chat_model("openai", "gpt-4o-mini", 0.2) 
+        elif provider == "ollama": 
+            return _cached_chat_model("ollama", _pick_default_ollama_model(), 0.2)
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
@@ -387,6 +503,10 @@ def get_model(provider: str, query: Optional[str] = None, priority: str = "balan
         return _cached_chat_model("anthropic", optimal.langchain_model_name, 0.2)
     elif provider == "gemini":
         return _cached_chat_model("gemini", optimal.langchain_model_name, 0.2)
+    elif provider == "openai": 
+        return _cached_chat_model("openai", optimal.langchain_model_name, 0.2) 
+    elif provider == "ollama": 
+        return _cached_chat_model("ollama", optimal.langchain_model_name, 0.2)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -407,6 +527,23 @@ def get_model_info(provider: str, query: Optional[str] = None, priority: str = "
                 'provider': provider,
                 'complexity': 'default',
                 'note': 'Using default model - no query provided for optimization'
+            }
+        elif provider == "openai": 
+            return { 
+                'model_name': 'GPT-4o Mini (Default)', 
+                'langchain_model_name': 'gpt-4o-mini', 
+                'provider': provider, 
+                'complexity': 'default', 
+                'note': 'Using default model - no query provided for optimization' 
+            } 
+        elif provider == "ollama": 
+            md = _pick_default_ollama_model() 
+            return { 
+                'model_name': f'{md} (Default)', 
+                'langchain_model_name': md, 
+                'provider': provider, 
+                'complexity': 'default', 
+                'note': 'Using locally installed Ollama model' 
             }
         else:
             raise ValueError(f"Unknown provider: {provider}")
