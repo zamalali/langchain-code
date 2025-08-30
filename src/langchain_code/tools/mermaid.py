@@ -363,43 +363,117 @@ def make_mermaid_tools(project_dir: str):
         fenced: bool = True,
     ) -> str:
         """
-        Build valid Mermaid syntax from a graph definition.
+        MERMAID GENERATOR — CONTRACT FOR THE AGENT
 
-        Use this tool when:
-        - You need to generate Mermaid code from JSON/YAML structures.
-        - You want to normalize or validate raw Mermaid syntax.
-        - You need to insert start/end nodes or apply styles.
+        Purpose
+        -------
+        Turn a simple graph spec (JSON/YAML or raw Mermaid) into valid Mermaid text that is ready to render.
 
-        Accepted input formats:
-        - **Raw Mermaid** (string starting with `graph`, `flowchart`, etc.)
-        - **Nodes as dict/list**:
-            {"A": "Start", "B": "End"}
-        - **Edges as list/dict**:
-            [{"source": "A", "target": "B"}]
-        - YAML equivalents of the above.
+        When to use
+        -----------
+        - You need Mermaid code from nodes/edges data.
+        - You need to normalize raw Mermaid written by the agent or the user.
+        - You want to insert start/end nodes, styles, curve style, or frontmatter.
 
-        Syntax rules (same as `mermaid_png`):
-        - Use only valid Mermaid node shapes:
-            A[Process], A(Rounded), A{Decision}, A([Stadium])
-        - Edge labels: `A -->|yes| B` (no quotes `"yes"`)
-        - Keep labels concise, no raw code inside nodes.
+        Inputs accepted
+        ---------------
+        - Raw Mermaid text starting with one of:
+        graph, flowchart, sequenceDiagram, classDiagram, stateDiagram, erDiagram, gantt
+        - Nodes as dict/list, e.g.:
+        {"A": "Start", "B": "End"}  or  [{"id": "A", "label": "Start"}]
+        - Edges as list/dict, e.g.:
+        [{"source": "A", "target": "B"}]  or  {"A": ["B", "C"]}
 
-        Output:
-        - By default, returns a fenced block:
-                ```mermaid
-                graph TD
-                A[Start] --> B[End]
-                ```
-        - If `fenced=False`, returns only the Mermaid text body.
+        Output
+        ------
+        - By default, a fenced Mermaid block:
+            ```mermaid
+            flowchart TD
+            A[Start] --> B[End]
+            ```
+        - Use `fenced=False` for the raw Mermaid body.
+
+        HARD RULES (must follow)
+        ------------------------
+        1) No multi-line labels (inside [], {}, ()). If you need a visible break, use <br/>.
+        GOOD: K[ReAct Agent<br/>(FEATURE_INSTR)]
+        BAD : K[ReAct Agent
+                (FEATURE_INSTR)]
+
+        2) No aggregated sources. Expand A & B --> C into separate edges.
+        GOOD: A --> C   and   B --> C
+        BAD : A & B --> C
+
+        3) Edge labels use either (no quotes):
+        GOOD: A -- label --> B
+                A -->|label| B
+        BAD : A --> "label" --> B
+
+        4) Keep labels readable text (letters/digits/space/?/_/-/.//). Avoid codey/punctuation-heavy labels.
+
+        5) Always start with a valid header/orientation if missing (e.g., flowchart TD or graph LR).
+
+        6) Decision nodes use {...}, processes use [...], rounded (…), stadium ([…]).
+
+        Recommended mini-workflow
+        -------------------------
+        1) If given raw Mermaid, re-emit it but ensure it starts with a valid header.
+        2) If given nodes/edges data, generate:
+        - a header (e.g., flowchart TD),
+        - one node per id with a single-line label,
+        - one edge per relation (no & aggregation).
+        3) Double-check rules 1–3 before returning.
+
+        Examples (GOOD)
+        ---------------
+        flowchart TD
+        A[CLI Entrypoint] --> B{Command Selection?}
+        B -- chat --> C[Chat Mode]
+        B -- feature --> D[Feature Mode]
+        B -- fix --> E[Fix Mode]
+        B -- analyze --> F[Analyze Mode]
+        B -- instr --> G[Edit Instructions]
+        C --> H{Mode?<br/>react/deep}
+        H -- react --> I[ReAct Agent]
+        H -- deep --> J[Deep Agent]
+        D --> K[ReAct Agent<br/>(FEATURE_INSTR)]
+        E --> L[ReAct Agent<br/>(BUGFIX_INSTR)]
+        F --> M[Deep Agent]
+        I --> N{Tool Selection}
+        J --> N
+        K --> N
+        L --> N
+        M --> N
+        N --> O[fs_local tools]
+        N --> P[mermaid tools]
+        N --> Q[shell tool]
+        N --> R[processor tool]
+        N --> S[search tools]
+        N --> T[script_exec tool]
+        N --> U[MCP tools]
+        N --> V{TavilySearch?}
+        V -- Yes --> W[TavilySearch tool]
+        Z{LLM Provider} --> AA[get_model]
+        AA --> AB((LLM))
+
+        Examples (BAD — do NOT produce)
+        -------------------------------
+        - Multi-line labels:
+        D --> K[ReAct Agent
+        (FEATURE_INSTR)]
+        - Aggregated sources:
+        I & J & K & L & M --> N
+        - Quoted edge labels:
+        A --> "yes" --> B
         """
+
         if not _MERMAID_OK:
             return (
                 "Mermaid support unavailable. "
                 "Please upgrade `langchain-core` to a version that includes `graph_mermaid`."
             )
 
-        # If caller passed YAML/JSON-like data for node_styles, ignore it.
-        # We only forward actual NodeStyles instances to draw_mermaid.
+
         if isinstance(node_styles, (str, dict, list, tuple)):
             node_styles = None
 
@@ -506,30 +580,52 @@ def make_mermaid_tools(project_dir: str):
         retry_delay: float = 1.0,
     ) -> str:
         """
-        Render Mermaid syntax to a PNG file inside the repo and return the saved path.
-        Accepts fenced blocks; extracts inner Mermaid automatically.
+        MERMAID PNG RENDERER — CONTRACT FOR THE AGENT
 
-        IMPORTANT SYNTAX RULES (to avoid mmdc/Kroki parse errors):
-        - Always use **valid Mermaid node shapes**:
-            - Rectangle (process):   A[Do something]
-            - Round edges:           A(Rounded step)
-            - Diamond (decision):    A{Yes or No?}
-            - Stadium:               A([Stadium step])
-        - **Do not** use parentheses or braces with raw text like: A{foo(bar)} or A(classify_complexity(query)).
-            Instead, write clean labels like: A{Classify complexity?}
-        - **Do not** wrap edge labels in quotes → use `A -->|simple| B` not `A --> "simple" --> B`.
-        - Keep labels short, no raw punctuation-heavy code inside nodes. For code, rephrase into natural language.
+        Purpose
+        -------
+        Render **already valid** Mermaid text to a PNG and return the saved path.
 
-        Modes:
-        - env MERMAID_RENDER_MODE=local|api|auto (default auto)
-        - draw_method overrides per-call (LOCAL/API/AUTO)
+        When to use
+        -----------
+        Only after you have valid Mermaid text. If you aren’t 100% sure the text follows
+        the rules below, call `mermaid_draw` first to normalize it.
 
-        Rendering priority:
-        1. LOCAL (via Mermaid CLI `mmdc`)
-        2. API fallback (Mermaid.ink, Kroki, etc.)
-        
-        Returns:
-        A message with the relative PNG path + size and source used.
+        Preconditions (must be true before calling)
+        -------------------------------------------
+        1) **No multi-line labels** inside `[]`, `{}`, or `()`. Use `<br/>` if you need a line break.
+        2) **No `&` aggregation** (e.g., `A & B --> C`). Expand to separate edges.
+        3) **No quoted edge labels.** Use `A -- label --> B` or `A -->|label| B`.
+        4) Diagram starts with a valid header (e.g., `flowchart TD` or `graph LR`).
+
+        Rendering policy
+        ----------------
+        - Mode: env `MERMAID_RENDER_MODE` = local|api|auto (default auto).
+        - `draw_method` overrides per call (LOCAL/API/AUTO).
+        - Priority: LOCAL (mmdc) → Mermaid.ink (retry) → Kroki.
+
+        If rendering fails
+        ------------------
+        - Treat it as a **syntax issue** unless logs clearly say otherwise.
+        - Fix the Mermaid by calling `mermaid_draw` with the same content and re-emit following the rules.
+        - Then call `mermaid_png` again.
+
+        Examples (VALID to render)
+        --------------------------
+        ```mermaid
+        flowchart TD
+        A[Start] --> B{Choice?}
+        B -- yes --> C[Do thing]
+        B -- no --> D[Skip]
+        Examples (INVALID — fix before calling)
+
+        Has &: A & B --> C
+
+        Has multi-line label in brackets:
+        K[Title (Details)]
+
+        Has quoted edge label:
+        A --> "go" --> B
         """
         if not _MERMAID_OK:
             return (

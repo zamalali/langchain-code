@@ -397,8 +397,7 @@ def _detect_ollama_models() -> list[str]:
                         # Some versions use "name", some "model" 
                         n = (it.get("name") or it.get("model") or "").strip() 
                         if n: 
-                            # Trim tags like ":latest" 
-                            names.append(n.split(":")[0]) 
+                            names.append(n)
                     return list(dict.fromkeys(names)) 
             except Exception: 
                 pass 
@@ -409,7 +408,7 @@ def _detect_ollama_models() -> list[str]:
             for ln in lines[1:]: 
                 name = ln.split()[0] 
                 if name: 
-                    out.append(name.split(":")[0]) 
+                    out.append(name)
             return list(dict.fromkeys(out)) 
     except Exception: 
         pass 
@@ -426,6 +425,11 @@ def _pick_default_ollama_model() -> str:
     if names:
         return names[0]
     return "llama3.1"
+
+def _chosen_ollama_model() -> str: 
+    """Use user-selected model if provided, otherwise fall back to default pick.""" 
+    env = os.getenv("LANGCODE_OLLAMA_MODEL") 
+    return env.strip() if env else _pick_default_ollama_model()
 
 
 def _cached_chat_model(provider: str, model_name: str, temperature: float = 0.2):
@@ -494,7 +498,7 @@ def get_model(provider: str, query: Optional[str] = None, priority: str = "balan
         elif provider == "openai": 
             return _cached_chat_model("openai", "gpt-4o-mini", 0.2) 
         elif provider == "ollama": 
-            return _cached_chat_model("ollama", _pick_default_ollama_model(), 0.2)
+            return _cached_chat_model("ollama", _chosen_ollama_model(), 0.2)
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
@@ -506,7 +510,8 @@ def get_model(provider: str, query: Optional[str] = None, priority: str = "balan
     elif provider == "openai": 
         return _cached_chat_model("openai", optimal.langchain_model_name, 0.2) 
     elif provider == "ollama": 
-        return _cached_chat_model("ollama", optimal.langchain_model_name, 0.2)
+        name = os.getenv("LANGCODE_OLLAMA_MODEL") or _chosen_ollama_model()
+        return _cached_chat_model("ollama", name, 0.2)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
@@ -537,13 +542,14 @@ def get_model_info(provider: str, query: Optional[str] = None, priority: str = "
                 'note': 'Using default model - no query provided for optimization' 
             } 
         elif provider == "ollama": 
-            md = _pick_default_ollama_model() 
+            md = os.getenv("LANGCODE_OLLAMA_MODEL") or _pick_default_ollama_model()
             return { 
-                'model_name': f'{md} (Default)', 
+                'model_name': f'{md}',  
                 'langchain_model_name': md, 
                 'provider': provider, 
-                'complexity': 'default', 
-                'note': 'Using locally installed Ollama model' 
+                'complexity': _router.classify_complexity(query),
+                'priority_used': priority, 
+                'note': 'Using selected/local Ollama model' 
             }
         else:
             raise ValueError(f"Unknown provider: {provider}")

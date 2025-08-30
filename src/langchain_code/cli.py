@@ -1040,7 +1040,7 @@ def _list_ollama_models() -> list[str]:
                     for it in data: 
                         n = (it.get("name") or it.get("model") or "").strip() 
                         if n: 
-                            names.append(n.split(":")[0]) 
+                            names.append(n)
                     return list(dict.fromkeys(names)) 
             except Exception: 
                 pass 
@@ -1051,7 +1051,7 @@ def _list_ollama_models() -> list[str]:
             for ln in lines[1:]: 
                 name = ln.split()[0] 
                 if name: 
-                    out.append(name.split(":")[0]) 
+                    out.append(name)
             return list(dict.fromkeys(out)) 
     except Exception: 
         pass 
@@ -1185,10 +1185,17 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
     apply_enabled = state["command"] in ("feature", "fix")
     apply_val = "on" if (state["apply"] and apply_enabled) else ("off" if apply_enabled else "n/a")
     llm_val = state["llm"] or "(auto)"
+    if state["llm"] == "ollama" and state.get("ollama_model"): 
+        llm_val = f"ollama · {state['ollama_model']}"
     proj_val = str(state["project_dir"])
     tests_val = state["test_cmd"] or "(none)"
-    ollama_names = _list_ollama_models() if state["llm"] == "ollama" else []
-    start_enabled = not (state["llm"] == "ollama" and not ollama_names)
+    ollama_names = _list_ollama_models() if state["llm"] == "ollama" else [] 
+    start_enabled = True 
+    if state["llm"] == "ollama": 
+        if not ollama_names: 
+            start_enabled = False 
+        elif state.get("ollama_model") and state["ollama_model"] not in ollama_names: 
+            start_enabled = False
     md_path = (state["project_dir"] / LANGCODE_DIRNAME / LANGCODE_FILENAME)
     if md_path.exists():
         try:
@@ -1350,15 +1357,7 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if key == _Key.RIGHT:
             toggle(fields_order[focus_index], +1)
             continue
-        if key == _Key.ENTER:
-            field = fields_order[focus_index]
-            if field in ("Project", "Environment", "Custom Instructions", "MCP Config", "Tests"):
-                toggle(field, +1)
-                continue
-            if field == "Start":
-                return state
-            toggle(field, +1)
-            continue
+
         if key == _Key.ENTER:
             field = fields_order[focus_index]
 
@@ -1366,7 +1365,10 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 toggle(field, +1)
                 continue
 
-            if field == "LLM" and state["llm"] == "ollama":
+            if field == "LLM": 
+                if state["llm"] != "ollama": 
+                    toggle("LLM", +1)
+                    continue
                 names = _list_ollama_models()
                 if not names:
                     console.print(Panel.fit(Text("No Ollama models detected. Install one (e.g., `ollama pull llama3.1`).", style="bold yellow"), border_style="yellow"))

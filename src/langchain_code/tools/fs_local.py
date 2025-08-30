@@ -43,13 +43,38 @@ def make_list_dir_tool(project_dir: str):
     @tool("list_dir", return_direct=False)
     def list_dir(path: str = ".") -> str:
         """
-        List files and directories at the given path (relative to project root).
+        LIST DIRECTORY — CONTRACT FOR THE AGENT
 
-        Use this to explore the file structure before reading or editing.
-          - `list_dir()` → lists the project root
-          - `list_dir("src/")` → lists all files under src/
+        Purpose
+        -------
+        List the contents of a **directory** (relative to project root).
 
-        Returns directory contents, with `/` suffix for folders.
+        Use when
+        --------
+        - You want to explore folders to discover files/subfolders.
+        - Examples: `list_dir()` → project root, `list_dir("src/")`, `list_dir(".langcode/")`.
+
+        Do NOT use when
+        ---------------
+        - The path is a **file** (e.g., ends with `.py`, `.md`, `.json`, etc.) → use `read_file`.
+        - You are unsure if it’s a file or directory → use `glob` first (e.g., `glob("src/**/*.py")`)
+          or call `list_dir` on the **parent directory** instead (e.g., `list_dir("src/")`).
+
+        Return shape
+        ------------
+        - One item per line.
+        - Directories end with a trailing `/`.
+        - Paths are relative to the project root.
+
+        Failure guidance
+        ----------------
+        - If you get "not a directory", **switch tools**: use `read_file` for files or `glob` for discovery.
+        - Do not call `list_dir` again on the same file path.
+
+        Examples
+        --------
+        GOOD: `list_dir("src/")`
+        BAD : `list_dir("src/langchain_code/cli.py")`  # this is a file; use read_file
         """
         p = _rooted(project_dir, path)
         if not p.exists():

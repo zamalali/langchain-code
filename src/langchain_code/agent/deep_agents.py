@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, List, Optional, Union
 
 from langgraph.prebuilt import create_react_agent
-from langgraph.types import Checkpointer
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from ..agent.state import DeepAgentState
