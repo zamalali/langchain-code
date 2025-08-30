@@ -31,7 +31,6 @@ def _normalize_one(item: Any) -> Dict[str, str] | None:
         if not content:
             return None
         return {"content": content, "status": "pending"}
-    # Dict-like task
     if isinstance(item, dict):
         content = (
             item.get("content")
@@ -45,7 +44,6 @@ def _normalize_one(item: Any) -> Dict[str, str] | None:
         if status not in {"pending", "in_progress", "completed"}:
             status = "pending"
         return {"content": content, "status": status}
-    # Fallback
     return _normalize_one(str(item))
 
 def _normalize_todos(raw: Any) -> List[Dict[str, str]]:
@@ -71,14 +69,13 @@ def _normalize_todos(raw: Any) -> List[Dict[str, str]]:
         if got:
             todos.append(got)
 
-    # Cap length just to be safe
     return todos[:50]
 
 @tool(description=WRITE_TODOS_DESCRIPTION)
 def write_todos(
-    todos: Any = None,              # now optional
-    items: Any = None,              # common alias models use
-    value: Any = None,              # another alias fallback
+    todos: Any = None,             
+    items: Any = None,              
+    value: Any = None,             
     state: Annotated[DeepAgentState, InjectedState] = None,
     tool_call_id: Annotated[str, InjectedToolCallId] = "",
 ) -> Command:
@@ -88,7 +85,7 @@ def write_todos(
             raw = candidate
             break
     if raw is None:
-        raw = []  # empty list is fine
+        raw = []  
     normalized = _normalize_todos(raw)
     return Command(update={
         "todos": normalized,
