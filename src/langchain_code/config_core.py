@@ -570,3 +570,10 @@ def get_model_info(provider: str, query: Optional[str] = None, priority: str = "
         'context_window': optimal.context_window,
         'priority_used': priority
     }
+
+def get_model_by_name(provider: str, model_name: str):
+    """
+    Return a cached chat model instance for an explicit model name.
+    Minimal helper to support manual model selection from the launcher.
+    """
+    return _cached_chat_model(provider, model_name, 0.2)

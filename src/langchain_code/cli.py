@@ -13,7 +13,9 @@ import difflib
 from datetime import datetime
 import re
 import json
+import ast
 
+from langchain_code.agent import state
 try:
     import termios
     import tty
@@ -33,6 +35,7 @@ from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.align import Align
+from rich.table import Table
 from rich import box
 from pyfiglet import Figlet
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -41,7 +44,7 @@ warnings.filterwarnings("ignore", message=r"typing\.NotRequired is not a Python 
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pydantic\._internal.*")
 
 from .config_core import resolve_provider as _resolve_provider_base
-from .config_core import get_model, get_model_info
+from .config_core import get_model, get_model_info, get_model_by_name
 
 from .agent.react import build_react_agent, build_deep_agent
 from .workflows.feature_impl import FEATURE_INSTR
@@ -49,6 +52,21 @@ from .workflows.bug_fix import BUGFIX_INSTR
 from .workflows.auto import AUTO_DEEP_INSTR
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
+import logging
+
+for _name in (
+    "langchain_google_genai",
+    "langchain_google_genai.chat_models",
+    "tenacity",
+    "tenacity.retry",
+    "httpx",
+    "urllib3",
+    "google",
+):
+    _log = logging.getLogger(_name)
+    _log.setLevel(logging.CRITICAL)
+    _log.propagate = False
+
 
 APP_HELP = """
 LangCode – ReAct + Tools + Deep (LangGraph) code agent CLI.
@@ -647,6 +665,8 @@ def session_banner(
     tips: Optional[List[str]] = None,
     model_info: Optional[Dict[str, Any]] = None,
     router_enabled: bool = False,
+    deep_mode: bool = False,
+    command_name: Optional[str] = None,
 ) -> Panel:
     title = Text(title_text, style="bold magenta")
     body = Text()
@@ -664,6 +684,10 @@ def session_banner(
     badge = Text()
     if router_enabled:
         badge.append("  [ROUTER ON]", style="bold green")
+    if command_name: 
+        badge.append(f"  [{command_name}]", style="bold blue") 
+    if deep_mode: 
+        badge.append("  [DEEP MODE]", style="bold magenta")
     if apply:
         badge.append("  [APPLY MODE]", style="bold red")
     if test_cmd:
@@ -717,6 +741,8 @@ def _print_session_header(
     tips: Optional[List[str]] = None,
     model_info: Optional[Dict[str, Any]] = None,
     router_enabled: bool = False,
+    deep_mode: bool = False,
+    command_name: Optional[str] = None,
 ) -> None:
     console.clear()
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
@@ -731,6 +757,8 @@ def _print_session_header(
             tips=tips,
             model_info=model_info,
             router_enabled=router_enabled,
+            deep_mode=deep_mode,
+            command_name=command_name
         )
     )
     console.print(Rule(style="green"))
@@ -754,7 +782,7 @@ def _looks_like_markdown(text: str) -> bool:
     return False
 
 
-def _panel_agent_output(text: str, title: str = "Agent") -> Panel:
+def _panel_agent_output(text: str, title: str = "Agent", model_label: Optional[str] = None) -> Panel:
     """
     Render agent output full-width, with clean wrapping and proper Markdown
     when appropriate. This avoids the 'half-cut' panel look.
@@ -762,22 +790,22 @@ def _panel_agent_output(text: str, title: str = "Agent") -> Panel:
     text = (text or "").rstrip()
 
     if _looks_like_markdown(text):
-        body = Markdown(text)  # Rich will wrap Markdown nicely
+        body = Markdown(text)  
     else:
         t = Text.from_ansi(text) if "\x1b[" in text else Text(text)
-        # ensure long tokens (e.g., URLs) don't blow out the width
         t.no_wrap = False
         t.overflow = "fold"
         body = t
 
-    # Use expand=True instead of Panel.fit(...) so the panel spans the console width
     return Panel(
         body,
         title=title,
         border_style="cyan",
         box=box.ROUNDED,
         padding=(1, 2),
-        expand=True,    
+        expand=True,   
+        subtitle=(Text(f"Model: {model_label}", style="dim") if model_label else None),
+        subtitle_align="right", 
     )
 
 def _panel_router_choice(info: Dict[str, Any]) -> Panel:
@@ -809,9 +837,118 @@ def _show_loader() -> Progress:
     progress.add_task("[bold]Processing...", total=None)
     return progress
 
+def _coerce_sequential_todos(todos: list[dict] | None) -> list[dict]:
+    """Ensure visual progression is strictly sequential."""
+    todos = list(todos or [])
+    blocked = False
+    out: list[dict] = []
+    for it in todos:
+        st = (it.get("status") or "pending").lower().replace("-", "_")
+        if blocked and st in {"in_progress", "completed"}:
+            st = "pending"
+        if st != "completed":
+            blocked = True
+        out.append({**it, "status": st})
+    return out
+
+def _render_todos_panel(todos: list[dict]) -> Panel:
+    todos = _coerce_sequential_todos(todos)
+
+    if not todos:
+        return Panel(Text("No TODOs yet.", style="dim"), title="TODOs", border_style="blue", box=box.ROUNDED)
+    table = Table.grid(padding=(0, 1))
+    table.add_column(justify="right", width=3, no_wrap=True)
+    table.add_column()
+
+    ICON = {"pending": "○", "in_progress": "◔", "completed": "✓"}
+    STYLE = {"pending": "dim", "in_progress": "yellow", "completed": "green"}
+
+    for i, it in enumerate(todos, 1):
+        status = (it.get("status") or "pending").lower().replace("-", "_")
+        status = status if status in ICON else "pending"
+        content = (it.get("content") or "").strip() or "(empty)"
+        style = STYLE[status]
+        mark = ICON[status]
+        text = Text(content, style=style)
+        if status == "completed":
+            text.stylize("strike")
+        table.add_row(f"{i}.", Text.assemble(Text(mark + " ", style=style), text))
+    return Panel(table, title="TODOs", border_style="blue", box=box.ROUNDED, padding=(1,1), expand=True)
+
+def _diff_todos(before: list[dict] | None, after: list[dict] | None) -> list[str]:
+    before = _coerce_sequential_todos(before or [])
+    after = _coerce_sequential_todos(after or [])
+    changes: list[str] = []
+    for i in range(min(len(before), len(after))):
+        b = (before[i].get("status") or "").lower()
+        a = (after[i].get("status") or "").lower()
+        if b != a:
+            content = (after[i].get("content") or before[i].get("content") or "").strip()
+            changes.append(f"[{i+1}] {content} → {a}")
+    if len(after) > len(before):
+        for j in range(len(before), len(after)):
+            content = (after[j].get("content") or "").strip()
+            changes.append(f"[+ ] {content} (added)")
+    if len(before) > len(after):
+        for j in range(len(after), len(before)):
+            content = (before[j].get("content") or "").strip()
+            changes.append(f"[- ] {content} (removed)")
+    return changes
+
+def _complete_all_todos(todos: list[dict] | None) -> list[dict]: 
+    """ 
+    Mark any non-completed TODOs as completed. Invoked right before rendering 
+    the final answer so the board reflects finished work the agent may have 
+    forgotten to mark as done. 
+    """ 
+    todos = list(todos or []) 
+    out: list[dict] = [] 
+    for it in todos: 
+        st = (it.get("status") or "pending").lower().replace("-", "_") 
+        if st != "completed": 
+            it = {**it, "status": "completed"} 
+        out.append(it) 
+    return out
+
 def _short(s: str, n: int = 280) -> str:
     s = s.replace("\r\n", "\n").strip()
     return s if len(s) <= n else s[:n] + " …"
+
+
+
+class _TodoLive(BaseCallbackHandler):
+    """Stream TODO updates when planner tools return Command(update={'todos': ...})."""
+    def __init__(self, console: Console):
+        self.c = console
+        self.prev: list[dict] = []
+
+    def on_tool_end(self, output, **kwargs):
+        s = str(output)
+        if "Command(update=" not in s or "'todos':" not in s:
+            return
+        m = re.search(r"Command\\(update=(\\{.*\\})\\)$", s, re.S)
+        if not m:
+            m = re.search(r"update=(\\{.*\\})", s, re.S)
+        if not m:
+            return
+        try:
+            data = ast.literal_eval(m.group(1)) 
+            todos = data.get("todos")
+            if not isinstance(todos, list):
+                return
+            changes = _diff_todos(self.prev, todos)
+            self.prev = todos
+            if todos:
+                self.c.print(_render_todos_panel(todos))
+            if changes:
+                self.c.print(Panel(Text("\\n".join(changes)),
+                                   title="Progress",
+                                   border_style="yellow",
+                                   box=box.ROUNDED,
+                                   expand=True))
+        except Exception:
+            pass
+
 
 class _RichDeepLogs(BaseCallbackHandler):
     """
@@ -1006,7 +1143,7 @@ def _render_choice(label: str, value: str, focused: bool, enabled: bool = True) 
     style = "bold white" if focused and enabled else ("dim" if not enabled else "white")
     val_style = "bold cyan" if enabled else "dim"
     t = Text(chev + label + ": ", style=style)
-    t.append(value, style=val_style)
+    t.append(str(value), style=val_style)
     return t
 
 def _info_panel_for(field: str) -> Panel:
@@ -1056,6 +1193,34 @@ def _list_ollama_models() -> list[str]:
     except Exception: 
         pass 
     return []
+
+def _provider_model_choices(provider: Optional[str]) -> list[str]: 
+    """Return model ids (LangChain names) to pick from for a provider.""" 
+    if not provider: 
+        return [] 
+    if provider == "gemini": 
+        return [
+            "gemini-2.0-flash-lite", 
+            "gemini-2.0-flash", 
+            "gemini-2.5-flash-lite", 
+            "gemini-2.5-flash", 
+            "gemini-2.5-pro", 
+        ] 
+    if provider == "anthropic": 
+        return [ 
+            "claude-3-5-haiku-20241022", 
+            "claude-3-7-sonnet-2025-05-14", 
+            "claude-opus-4.1-20250501", 
+        ] 
+    if provider == "openai": 
+        return [ 
+            "gpt-4o-mini", 
+            "gpt-4o", 
+        ] 
+    if provider == "ollama": 
+        return _list_ollama_models() 
+    return []
+
 
 def _help_content() -> Panel:
     """
@@ -1185,8 +1350,11 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
     apply_enabled = state["command"] in ("feature", "fix")
     apply_val = "on" if (state["apply"] and apply_enabled) else ("off" if apply_enabled else "n/a")
     llm_val = state["llm"] or "(auto)"
-    if state["llm"] == "ollama" and state.get("ollama_model"): 
-        llm_val = f"ollama · {state['ollama_model']}"
+    if state["llm"] == "ollama" and state.get("ollama_model") and not state.get("model_override"): 
+        model_val = state["ollama_model"]
+    else:
+        model_val = state.get("model_override", "(default)")
+
     proj_val = str(state["project_dir"])
     tests_val = state["test_cmd"] or "(none)"
     ollama_names = _list_ollama_models() if state["llm"] == "ollama" else [] 
@@ -1209,6 +1377,7 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
 
     env_val = _env_status_label(state["project_dir"])
     mcp_val = _mcp_status_label(state["project_dir"])
+    model_enabled = bool(state["llm"]) and not state["router"]
 
     labels = [
         ("Command", cmd_val, True),
@@ -1218,6 +1387,7 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
         ("Autopilot", autopilot_val, auto_enabled),
         ("Apply", apply_val, apply_enabled),
         ("LLM", llm_val, True),
+        ("Model", model_val, model_enabled),
         ("Project", proj_val, True),
         ("Environment", env_val, True),
         ("Custom Instructions", instr_val, True),
@@ -1275,7 +1445,7 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     show_help = False
     fields_order = [
         "Command", "Engine", "Router", "Priority", "Autopilot", "Apply",
-        "LLM", "Project", "Environment", "Custom Instructions", "MCP Config", "Tests", "Start"
+        "LLM", "Model", "Project", "Environment", "Custom Instructions", "MCP Config", "Tests", "Start"
     ]
 
     def toggle(field: str, direction: int) -> None:
@@ -1306,6 +1476,10 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             cur = state["llm"]
             i = (opts.index(cur) + direction) % len(opts)
             state["llm"] = opts[i]
+            state["model_override"] = None
+            os.environ.pop("LANGCODE_MODEL_OVERRIDE", None)
+        elif field == "Model":
+            return 
         elif field == "Project":
             path = console.input("[bold]Project directory[/bold] (Enter to keep current): ").strip()
             if path:
@@ -1397,6 +1571,48 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 console.input("Press Enter to continue...")
                 continue
 
+
+
+            if field == "Model": 
+                if not state["llm"] or state["router"]: 
+                    continue 
+                choices = _provider_model_choices(state["llm"]) 
+                if not choices: 
+                    console.print(Panel.fit(Text("No selectable models found for this provider.", style="yellow"), 
+                                            border_style="yellow")) 
+                    console.input("Press Enter to continue...") 
+                    continue 
+                console.print(Panel.fit(Text("Select a model by number (empty to clear to default):", style="bold"), 
+                                        border_style="cyan")) 
+                for i, name in enumerate(choices, 1): 
+                    mark = "✓ " if name == state.get("model_override") else "  " 
+                    console.print(f"  {mark}{i}. {name}") 
+                choice = console.input("Your choice: ").strip() 
+                if not choice: 
+                    state["model_override"] = None 
+                    os.environ.pop("LANGCODE_MODEL_OVERRIDE", None) 
+                else: 
+                    try: 
+                        idx = int(choice) - 1 
+                        if 0 <= idx < len(choices): 
+                            state["model_override"] = choices[idx] 
+                            os.environ["LANGCODE_MODEL_OVERRIDE"] = choices[idx] 
+                            console.print(Panel.fit(Text(f"Selected: {choices[idx]}", style="green"), 
+                                                    border_style="green")) 
+                        else: 
+                            console.print(Panel.fit(Text("Invalid selection.", style="yellow"), border_style="yellow")) 
+                    except Exception: 
+                        console.print(Panel.fit(Text("Invalid input.", style="yellow"), border_style="yellow")) 
+                console.input("Press Enter to continue...") 
+                continue
+
+
+
+
+
+
+
+
             if field == "Start":
                 if state["llm"] == "ollama" and not _list_ollama_models():
                     console.print(Panel.fit(Text("Cannot start: no Ollama models installed.", style="bold red"), border_style="red"))
@@ -1416,6 +1632,7 @@ def _default_state() -> Dict[str, Any]:
         "project_dir": Path.cwd(),
         "test_cmd": None,
         "ollama_model": None,
+        "model_override": None
     }
 
 def _dispatch_from_state(chosen: Dict[str, Any]) -> Optional[str]:
@@ -1514,10 +1731,11 @@ def _selection_hub(initial_state: Optional[Dict[str, Any]] = None) -> None:
     finally:
         _IN_SELECTION_HUB = False
 
+
 @app.callback(invoke_without_command=True)
 def _root(ctx: typer.Context):
     if ctx.invoked_subcommand is None:
-        _selection_hub(_default_state())
+        _selection_hub()
         raise typer.Exit()
 
 @app.command(help="Open an interactive chat with the agent. Modes: react | deep (default: react). Use --auto in deep mode for full autopilot (plan+act with no questions).")
@@ -1536,6 +1754,8 @@ def chat(
       - "select": user requested to return to launcher
       - None: normal return (caller may continue)
     """
+    from rich.live import Live  # local import so you don't have to change global imports
+
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
     priority = (priority or "balanced").lower()
@@ -1550,7 +1770,7 @@ def chat(
     session_title = "LangChain Code Agent • Deep Chat" if mode == "deep" else "LangChain Code Agent • Chat"
     if mode == "deep" and auto:
         session_title += " (Auto)"
-    _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
+    _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router, deep_mode=(mode == "deep"), command_name="chat")
 
     history: list = []
     msgs: list = []
@@ -1563,7 +1783,14 @@ def chat(
 
     static_agent = None
     if not router:
-        chosen_llm = get_model(provider) if provider in {"openai", "ollama"} else None
+        # chosen_llm = get_model(provider) if provider in {"openai", "ollama"} else None
+        env_override = os.getenv("LANGCODE_MODEL_OVERRIDE") 
+        chosen_llm = None 
+        if env_override: 
+            chosen_llm = get_model_by_name(provider, env_override) 
+        else: 
+            chosen_llm = get_model(provider)
+
         if mode == "deep":
             seed = AUTO_DEEP_INSTR if auto else None
             static_agent = _build_deep_agent_with_optional_llm(
@@ -1576,6 +1803,65 @@ def chat(
 
     prio_limits = {"speed": 30, "cost": 35, "balanced": 45, "quality": 60}
 
+    # ----- live TODO callback (no logs; updates the same table) -----------------
+    import re as _re, ast as _ast, json as _json
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    class _TodoLiveMinimal(BaseCallbackHandler):
+        """Updates the single TODO table in-place; no extra logs."""
+        def __init__(self, live: Live):
+            self.live = live
+            self.todos: list[dict] = []
+            self.seen = False
+
+        def _extract_todos(self, payload) -> Optional[list]:
+            if isinstance(payload, dict):
+                if isinstance(payload.get("todos"), list):
+                    return payload["todos"]
+                upd = payload.get("update")
+                if isinstance(upd, dict) and isinstance(upd.get("todos"), list):
+                    return upd["todos"]
+
+            upd = getattr(payload, "update", None)
+            if isinstance(upd, dict) and isinstance(upd.get("todos"), list):
+                return upd["todos"]
+
+            s = str(payload)
+            m = _re.search(r"Command\([^)]*update=(\{.*\})\)?$", s, _re.S) or _re.search(r"update=(\{.*\})", s, _re.S)
+            if m:
+                try:
+                    data = _ast.literal_eval(m.group(1))
+                    if isinstance(data, dict) and isinstance(data.get("todos"), list):
+                        return data["todos"]
+                except Exception:
+                    pass
+            jm = _re.search(r"(\{.*\"todos\"\s*:\s*\[.*\].*\})", s, _re.S)
+            if jm:
+                try:
+                    data = _json.loads(jm.group(1))
+                    if isinstance(data.get("todos"), list):
+                        return data["todos"]
+                except Exception:
+                    pass
+            return None
+
+        def _render(self, todos: list[dict]):
+            todos = _coerce_sequential_todos(todos)
+            self.todos = todos
+            self.seen = True
+            self.live.update(_render_todos_panel(todos))
+
+        def on_tool_end(self, output, **kwargs):
+            t = self._extract_todos(output)
+            if t is not None:
+                self._render(t)
+
+        def on_chain_end(self, outputs, **kwargs):
+            t = self._extract_todos(outputs)
+            if t is not None:
+                self._render(t)
+
+
     try:
         while True:
             user = console.input(PROMPT).strip()
@@ -1584,10 +1870,13 @@ def chat(
 
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
-                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
+                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router, deep_mode=(mode == "deep"), command_name="chat")
                 history.clear()
                 msgs.clear()
+                last_todos = []
+                last_files = {}
                 continue
+
             if low in {"select", "/select", "/menu", ":menu"}:
                 console.print("[cyan]Returning to launcher…[/cyan]")
                 if _IN_SELECTION_HUB:
@@ -1604,11 +1893,12 @@ def chat(
                     "test_cmd": None,
                 })
                 return "quit"
+
             if low in {"exit", "quit", ":q", "/exit", "/quit"}:
                 return "quit"
-            
+
             if low in {"help", "/help", ":help"}:
-                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
+                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router, deep_mode=(mode == "deep"), command_name="chat")
                 console.print(_help_content())
                 continue
 
@@ -1617,9 +1907,9 @@ def chat(
                     console.print(Panel.fit(Text("Memory & stats are available in deep mode only.", style="yellow"),
                                             border_style="yellow"))
                     continue
-                from rich.table import Table
+                from rich.table import Table as _Table
                 if low == "/memory":
-                    t = Table.grid(padding=(0, 2))
+                    t = _Table.grid(padding=(0, 2))
                     t.add_row(Text("Thread", style="bold"), Text(deep_thread_id))
                     t.add_row(Text("DB", style="bold"), Text(str(db_path)))
                     t.add_row(
@@ -1630,7 +1920,7 @@ def chat(
                     t.add_row(Text("Files", style="bold"), Text(", ".join(sorted(last_files.keys())) or "(none)"))
                     console.print(Panel(t, title="/memory", border_style="cyan", box=box.ROUNDED))
                 else:
-                    t = Table.grid(padding=(0, 2))
+                    t = _Table.grid(padding=(0, 2))
                     t.add_row(Text("User turns", style="bold"), Text(str(user_turns)))
                     t.add_row(Text("Agent turns", style="bold"), Text(str(ai_turns)))
                     t.add_row(Text("Messages (current buffer)", style="bold"), Text(str(len(msgs))))
@@ -1648,8 +1938,7 @@ def chat(
             pending_output_panel: Optional[Panel] = None
             react_history_update: Optional[Tuple[HumanMessage, AIMessage]] = None
 
-            deep_verbose = (mode == "deep" and verbose)
-            deep_config: Dict[str, Any] = {}
+            # --------- Phase 1: choose/build agent (with quick spinner) ----------
             agent = static_agent
             model_info = None
             chosen_llm = None
@@ -1691,58 +1980,29 @@ def chat(
                             )
                         _agent_cache_put(cache_key, agent)
 
-                if mode == "deep":
-                    msgs.append({"role": "user", "content": coerced})
-                    if auto:
-                        msgs.append({
-                            "role": "system",
-                            "content": (
-                                "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
-                                "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
-                                "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
-                            )
-                        })
-                    deep_config = {
-                        "recursion_limit": prio_limits.get(priority, 45),
-                        "configurable": {"thread_id": deep_thread_id},
-                    }
+            if pending_router_panel:
+                console.print(pending_router_panel)
 
-                    if not deep_verbose:
-                        output: str = ""
-                        try:
-                            res = agent.invoke({"messages": msgs}, config=deep_config)
-                            if isinstance(res, dict) and "messages" in res:
-                                msgs = res["messages"]
-                                last_todos = res.get("todos") or last_todos
-                                last_files = res.get("files") or last_files
-                            else:
-                                output = "Error: Invalid response format from agent."
-                        except Exception as e:
-                            output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
-                                      if "recursion" in str(e).lower()
-                                      else f"Agent error: {e}")
+            def _current_model_label() -> Optional[str]: 
+                if router: 
+                    if model_info and model_info.get("langchain_model_name"): 
+                        return model_info["langchain_model_name"] 
+                    return None 
+                env_override = os.getenv("LANGCODE_MODEL_OVERRIDE") 
+                if env_override: 
+                    return env_override 
+                try: 
+                    return get_model_info(provider).get("langchain_model_name") 
+                except Exception: 
+                    return None 
+            _model_label = _current_model_label()
 
-                        if not output:
-                            last_content = _extract_last_content(msgs).strip()
-                            if not last_content:
-                                msgs.append({
-                                    "role": "system",
-                                    "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
-                                })
-                                try:
-                                    res = agent.invoke({"messages": msgs}, config=deep_config)
-                                    if isinstance(res, dict) and "messages" in res:
-                                        msgs = res["messages"]
-                                        last_todos = res.get("todos") or last_todos
-                                        last_files = res.get("files") or last_files
-                                    last_content = _extract_last_content(msgs).strip()
-                                except Exception as e:
-                                    last_content = f"Agent failed after retry: {e}"
-                            output = last_content or "No response generated."
-                        pending_output_panel = _panel_agent_output(output)
-                        ai_turns += 1
 
-                else:
+
+
+
+            if mode == "react":
+                with _show_loader():
                     try:
                         res = agent.invoke({"input": coerced, "chat_history": history})
                         output = res.get("output", "") if isinstance(res, dict) else str(res)
@@ -1760,30 +2020,95 @@ def chat(
                                 output = "No response generated. Try rephrasing your request."
                     except Exception as e:
                         output = f"ReAct agent error: {e}"
+                pending_output_panel = _panel_agent_output(output, model_label=_model_label)
+                react_history_update = (HumanMessage(content=coerced), AIMessage(content=output))
 
-                    pending_output_panel = _panel_agent_output(output)
-                    react_history_update = (HumanMessage(content=coerced), AIMessage(content=output))
+            else:
+                # Deep mode UX: 1 live TODO table, then final answer. No other logs.
+                msgs.append({"role": "user", "content": coerced})
+                if auto:
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
+                            "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
+                            "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
+                        )
+                    })
 
-            if pending_router_panel:
-                console.print(pending_router_panel)
+                deep_config: Dict[str, Any] = {
+                    "recursion_limit": prio_limits.get(priority, 100),
+                    "configurable": {"thread_id": deep_thread_id},
+                }
 
-            if mode == "deep" and deep_verbose:
-                try:
-                    deep_config = dict(deep_config)
-                    deep_config["callbacks"] = [_RichDeepLogs(console)]
-                    res = agent.invoke({"messages": msgs}, config=deep_config)
-                    if isinstance(res, dict) and "messages" in res:
-                        msgs = res["messages"]
-                        last_todos = res.get("todos") or last_todos
-                        last_files = res.get("files") or last_files
-                        output = _extract_last_content(msgs).strip() or "No response generated."
+                placeholder = Panel(
+                    Text("Planning tasks…", style="dim"),
+                    title="TODOs",
+                    border_style="blue",
+                    box=box.ROUNDED,
+                    padding=(1, 1),
+                    expand=True
+                )
+
+                output: str = ""
+                prev_todos = last_todos
+
+                with Live(placeholder, refresh_per_second=8, transient=False) as live:
+                    todo_cb = _TodoLiveMinimal(live)
+                    deep_config["callbacks"] = [todo_cb]  
+                    res = {}
+                    try:
+                        res = agent.invoke({"messages": msgs}, config=deep_config)
+                        if isinstance(res, dict) and "messages" in res:
+                            msgs = res["messages"]
+                            last_files = res.get("files") or last_files
+                            last_content = _extract_last_content(msgs).strip()
+                        else:
+                            last_content = ""
+                            res = res if isinstance(res, dict) else {}
+
+                    except Exception as e:
+                        last_content = ""
+                        output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
+                                  if "recursion" in str(e).lower()
+                                  else f"Agent error: {e}")
+                        res = {}
+                    if not output:
+                        if not last_content:
+                            # one safety retry to force a response
+                            msgs.append({
+                                "role": "system",
+                                "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
+                            })
+                            try:
+                                res2 = agent.invoke({"messages": msgs}, config=deep_config)
+                                if isinstance(res2, dict) and "messages" in res2:
+                                    msgs = res2["messages"]
+                                last_content = _extract_last_content(msgs).strip()
+                            except Exception as e:
+                                last_content = f"Agent failed after retry: {e}"
+                        output = last_content or "No response generated."
+
+                    final_todos = res.get("todos") if isinstance(res, dict) else None
+                    if not isinstance(final_todos, list) or not final_todos:
+                        final_todos = getattr(todo_cb, "todos", [])
+
+                    if final_todos: 
+                        if output and output.strip(): 
+                            final_todos = _complete_all_todos(final_todos) 
+                        live.update(_render_todos_panel(final_todos))
+                        last_todos = final_todos
                     else:
-                        output = "Error: Invalid response format from agent."
-                except Exception as e:
-                    output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
-                              if "recursion" in str(e).lower()
-                              else f"Agent error: {e}")
-                pending_output_panel = _panel_agent_output(output)
+                        live.update(Panel(
+                            Text("No tasks were emitted by the agent.", style="dim"),
+                            title="TODOs",
+                            border_style="blue",
+                            box=box.ROUNDED,
+                            padding=(1, 1),
+                            expand=True
+                        ))
+
+                pending_output_panel = _panel_agent_output(output, model_label=_model_label)
                 ai_turns += 1
 
             if pending_output_panel:
@@ -1834,6 +2159,7 @@ def feature(
         test_cmd=test_cmd,
         model_info=(model_info if (router and verbose) else None),
         router_enabled=router,
+        
     )
     if router and verbose and model_info:
         console.print(_panel_router_choice(model_info))
