@@ -12,6 +12,9 @@ def file_reducer(l, r):
     if r is None: return l
     return {**l, **r}
 
+def replace_reducer(_, new):
+    return new
+
 class DeepAgentState(AgentState):
-    todos: NotRequired[list[Todo]]
+    todos: Annotated[NotRequired[list[Todo]], replace_reducer]   
     files: Annotated[NotRequired[dict[str, str]], file_reducer]

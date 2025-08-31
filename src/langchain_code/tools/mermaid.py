@@ -220,23 +220,16 @@ def _is_png(bytes_: bytes, content_type: str) -> bool:
     return bytes_.startswith(b"\x89PNG\r\n\x1a\n") or ("image/png" in (content_type or "").lower())
 
 def _encode_mermaid_ink(code: str) -> str:
-    """Fixed Mermaid.ink encoder with proper URL encoding"""
+    """Correct encoder for mermaid.ink (raw DEFLATE + base64url, no padding)."""
     try:
-        # Clean the mermaid code - remove any extra whitespace
-        cleaned_code = code.strip()
-        
-        # Use standard zlib compression
-        compressed = zlib.compress(cleaned_code.encode("utf-8"))
-        
-        # Use standard base64 encoding (not URL-safe initially)
-        b64 = base64.b64encode(compressed).decode("ascii")
-        
-        # Now make it URL-safe
-        b64_urlsafe = b64.replace("+", "-").replace("/", "_").rstrip("=")
-        
-        return f"https://mermaid.ink/img/{b64_urlsafe}"
+        cleaned = code.strip().encode("utf-8")
+        compressor = zlib.compressobj(level=9, wbits=-15)
+        compressed = compressor.compress(cleaned) + compressor.flush()
+        b64 = base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
+        return f"https://mermaid.ink/img/{b64}"
     except Exception as e:
         raise RuntimeError(f"Failed to encode for mermaid.ink: {e}")
+
 
 def _render_png_via_mermaid_ink(diagram: str) -> Tuple[bytes, str]:
     """Improved Mermaid.ink renderer with better error handling"""
@@ -257,71 +250,76 @@ def _render_png_via_mermaid_ink(diagram: str) -> Tuple[bytes, str]:
 def _render_png_via_kroki(diagram: str) -> Tuple[bytes, str]:
     """Improved Kroki renderer"""
     try:
-        # Try text/plain first (simpler)
-        print("Trying Kroki text/plain method...")
-        data, ctype = _http_post("https://kroki.io/mermaid/png", diagram.encode("utf-8"), "text/plain; charset=utf-8", 45)
+        data, ctype = _http_post("https://kroki.io/mermaid/png",
+                                 diagram.encode("utf-8"),
+                                 "text/plain; charset=utf-8", 45)
         if _is_png(data, ctype):
             return data, "kroki.io(text)"
-        
-        # Try JSON method
-        print("Trying Kroki JSON method...")
-        body = json.dumps({"diagram_source": diagram, "diagram_type": "mermaid", "output_format": "png"}).encode("utf-8")
-        data, ctype = _http_post("https://kroki.io/mermaid/png", body, "application/json; charset=utf-8", 45)
+
+        body = json.dumps({
+            "diagram_source": diagram,
+            "diagram_type": "mermaid",
+            "output_format": "png"
+        }).encode("utf-8")
+        data, ctype = _http_post("https://kroki.io/diagram",
+                                 body, "application/json; charset=utf-8", 45)
         if _is_png(data, ctype):
             return data, "kroki.io(json)"
-            
+
         raise RuntimeError(f"Kroki returned non-PNG (content-type={ctype!r}, size={len(data)}).")
     except Exception as e:
         raise RuntimeError(f"Kroki rendering failed: {e}")
 
-# ---------------- Local renderer (mmdc) ----------------
 
-def _have_mmdc() -> Optional[str]:
-    # Prefer explicit env var first
-    explicit = os.getenv("MERMAID_CLI")  # full path to mmdc
+
+def _have_mmdc() -> Optional[tuple[str, str]]:
+    """Return ('direct'|'npx', executable_path) or None."""
+    explicit = os.getenv("MERMAID_CLI")
     if explicit and Path(explicit).exists():
-        return explicit
+        return ("direct", explicit)
     which = shutil.which("mmdc")
     if which:
-        return which
-    # Allow npx usage if desired (requires internet on first run)
+        return ("direct", which)
     npx = shutil.which("npx")
     if npx:
-        return "npx -y @mermaid-js/mermaid-cli mmdc"  # used via shell=True
+        return ("npx", npx)
     return None
 
 def _run_mmdc_to_png(diagram: str, out_path: Path) -> str:
-    mmdc = _have_mmdc()
-    if not mmdc:
+    found = _have_mmdc()
+    if not found:
         raise FileNotFoundError(
-            "Mermaid CLI (mmdc) not found. Install with `npm i -g @mermaid-js/mermaid-cli` "
-            "or set MERMAID_CLI to its full path."
+            "Mermaid CLI not found. Install: `npm i -g @mermaid-js/mermaid-cli` "
+            "or ensure `npx` is available (online first run)."
         )
+    mode, exe = found
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as td:
         inp = Path(td) / "diagram.mmd"
         inp.write_text(diagram, encoding="utf-8")
 
-        # Optional Chromium path for corp/offline boxes
         chrome = os.getenv("MERMAID_CHROMIUM_PATH") or os.getenv("PUPPETEER_EXECUTABLE_PATH")
         puppeteer_cfg = None
-        cmd: list[str] | str
-
         if chrome and Path(chrome).exists():
             puppeteer_cfg = Path(td) / "puppeteer.json"
-            puppeteer_cfg.write_text(json.dumps({"executablePath": str(Path(chrome).resolve())}), encoding="utf-8")
+            puppeteer_cfg.write_text(
+                json.dumps({"executablePath": str(Path(chrome).resolve())}),
+                encoding="utf-8"
+            )
 
-        if " " in (mmdc or "") and mmdc.startswith("npx "):
-            # Use shell to support inline "npx -y ..."
-            cmd = f'{mmdc} -i "{inp}" -o "{out_path}"{" -p " + str(puppeteer_cfg) if puppeteer_cfg else ""}'
-            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        else:
-            cmd_list = [mmdc, "-i", str(inp), "-o", str(out_path)]
+        if mode == "direct":
+            cmd = [exe, "-i", str(inp), "-o", str(out_path)]
             if puppeteer_cfg:
-                cmd_list += ["-p", str(puppeteer_cfg)]
-            proc = subprocess.run(cmd_list, shell=False, capture_output=True, text=True)
+                cmd += ["-p", str(puppeteer_cfg)]
+        else:
 
+            cmd = [exe, "--yes", "@mermaid-js/mermaid-cli@10.9.1",
+                   "-i", str(inp), "-o", str(out_path)]
+            if puppeteer_cfg:
+                cmd += ["-p", str(puppeteer_cfg)]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, shell=False)
         if proc.returncode != 0:
             raise RuntimeError(f"mmdc failed (code={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}")
 

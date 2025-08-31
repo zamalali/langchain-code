@@ -5,9 +5,8 @@ import os, sys, time, shutil, subprocess, re, datetime as _dt
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-# ---------------- interpreters & basics ----------------
 _INTERPS = {
-    "python":      lambda: [(sys.executable or "python"), "-u"],  # unbuffered
+    "python":      lambda: [(sys.executable or "python"), "-u"],  
     "bash":        lambda: [shutil.which("bash") or "bash"],
     "sh":          lambda: [shutil.which("sh") or "sh"],
     "powershell":  lambda: ["powershell" if os.name == "nt" else "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass"],
@@ -73,7 +72,6 @@ def _janitor(tmp_dir: Path, hours: int = 2) -> None:
     except Exception:
         pass
 
-# ---------------- args schema (Gemini-safe) ----------------
 class ScriptExecArgs(BaseModel):
     language: Literal["python", "bash", "sh", "powershell", "node", "cmd"] = Field(..., description="Interpreter.")
     code: str = Field(..., description="Short, self-contained script body.")

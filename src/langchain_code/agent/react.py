@@ -45,6 +45,7 @@ RUNTIME_POLICY = """
 - Never spawn background daemons; keep everything inside the project root.
 """.strip()
 
+
 def _maybe_make_tavily_tool() -> Optional[BaseTool]:
     if TavilySearch is None or not os.getenv("TAVILY_API_KEY"):
         return None
@@ -100,7 +101,6 @@ def build_react_agent(
     llm: Optional[Any] = None,
 ) -> AgentExecutor:
     model = llm or get_model(provider)
-
     try:
         mcp_tools: List[BaseTool] = asyncio.run(get_mcp_tools(project_dir))
     except RuntimeError:
@@ -138,7 +138,7 @@ def build_react_agent(
     return AgentExecutor(
         agent=agent,
         tools=tool_list,
-        verbose=True,
+        verbose=False,
         max_iterations=20,
         max_execution_time=300,
         early_stopping_method="generate",
