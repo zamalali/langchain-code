@@ -175,8 +175,8 @@ class IntelligentLLMRouter:
                 reasoning_strength=8,
                 context_window=200_000,
                 provider="anthropic",
-                model_id="claude-3-7-sonnet-20250514",
-                langchain_model_name="claude-3-7-sonnet-2025-05-14",
+                model_id="claude-3-7-sonnet-20250219",
+                langchain_model_name="claude-3-7-sonnet-20250219",
                 context_threshold=200_000
             ),
             ModelConfig(
@@ -429,8 +429,9 @@ def _pick_default_ollama_model() -> str:
 def _chosen_ollama_model() -> str: 
     """Use user-selected model if provided, otherwise fall back to default pick.""" 
     env = os.getenv("LANGCODE_OLLAMA_MODEL") 
-    return env.strip() if env else _pick_default_ollama_model()
-
+    if isinstance(env, str):
+        return env.strip()
+    return _pick_default_ollama_model()
 
 def _cached_chat_model(provider: str, model_name: str, temperature: float = 0.2):
     key = (provider, model_name, temperature)
@@ -484,7 +485,7 @@ def resolve_provider(cli_llm: str | None) -> str:
 def get_model(provider: str, query: Optional[str] = None, priority: str = "balanced"):
     """
     When no query is given (no router context), return a solid default:
-      - anthropic => 'claude-3-7-sonnet-2025-05-14'
+      - anthropic => 'claude-3-7-sonnet-20250219'
       - gemini    => 'gemini-2.0-flash'
       - openai    => 'gpt-4o-mini'
       - ollama    => detected default (prefers llama3.1)
@@ -492,7 +493,7 @@ def get_model(provider: str, query: Optional[str] = None, priority: str = "balan
     """
     if not query:
         if provider == "anthropic":
-            return _cached_chat_model("anthropic", "claude-3-7-sonnet-2025-05-14", 0.2)
+            return _cached_chat_model("anthropic", "claude-3-7-sonnet-20250219", 0.2)
         elif provider == "gemini":
             return _cached_chat_model("gemini", "gemini-2.0-flash", 0.2)
         elif provider == "openai": 
@@ -520,7 +521,7 @@ def get_model_info(provider: str, query: Optional[str] = None, priority: str = "
         if provider == "anthropic":
             return {
                 'model_name': 'Claude Sonnet (Default)',
-                'langchain_model_name': 'claude-3-7-sonnet-2025-05-14',
+                'langchain_model_name': 'claude-3-7-sonnet-20250219',
                 'provider': provider,
                 'complexity': 'default',
                 'note': 'Using default model - no query provided for optimization'
