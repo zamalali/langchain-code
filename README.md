@@ -2,10 +2,7 @@
   <img src="assets/logo.png" alt="LangCode Logo" width="180" />
 </p>
 
-<p align="center">
-  <strong><font size="6">LangCode</font></strong>
-</p>
-
+<h1 align="center">LangCode</h1>
 <p align="center">
   <em><font size="4">The only CLI you'll ever need!</font></em>
 </p>
