@@ -1,7 +1,8 @@
 <div align="center">
   <img src="../../assets/logo.png" alt="LangCode Logo" width="180" />
-  <h1><b>LangCode</b></h1>
-  <p><b>The only CLI you'll ever need.</b></p>
+  <h1 align="center">LangCode</h1>
+
+  <p align="center"><i><b>The only CLI you'll ever need!</b></i></p>
 </div>
 
 # Deep Agent
