@@ -1,13 +1,18 @@
-<div align="center" style="font-family: 'Segoe UI', Helvetica, Arial, sans-serif; margin-top: 20px;">
-  <img src="assets/logo.png" alt="LangCode Logo" width="180" style="margin-bottom: 10px;" />
-<h1 align="center">LangCode</h1>
+<p align="center">
+  <img src="assets/logo.png" alt="LangCode Logo" width="180" />
+</p>
 
-<p align="center"><i><b>The only CLI you'll ever need!</b></i></p>
+<p align="center">
+  <strong><font size="6">LangCode</font></strong>
+</p>
 
-<div align="center">
-    <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%"/>
-</div>
+<p align="center">
+  <em><font size="4">The only CLI you'll ever need!</font></em>
+</p>
 
+<p align="center">
+  <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%" />
+</p>
 
 LangCode is an AI-powered coding assistant designed to streamline your development workflow. Interact with your codebase, implement new features, fix bugs, and gain insights, all from a single, intuitive interface.
 
