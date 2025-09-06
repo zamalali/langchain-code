@@ -1,12 +1,8 @@
 <div align="center" style="font-family: 'Segoe UI', Helvetica, Arial, sans-serif; margin-top: 20px;">
   <img src="assets/logo.png" alt="LangCode Logo" width="180" style="margin-bottom: 10px;" />
-<p align="center">
-  <strong><font size="6">LangCode</font></strong>
-</p>
+<h1 align="center">LangCode</h1>
 
-<p align="center">
-  <em><font size="4">The only CLI you'll ever need!</font></em>
-</p>
+<p align="center"><i><b>The only CLI you'll ever need!</b></i></p>
 
 <div align="center">
     <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%"/>
