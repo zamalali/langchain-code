@@ -138,7 +138,7 @@ def build_react_agent(
     return AgentExecutor(
         agent=agent,
         tools=tool_list,
-        verbose=False,
+        verbose=True,
         max_iterations=20,
         max_execution_time=300,
         early_stopping_method="generate",

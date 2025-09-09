@@ -188,8 +188,8 @@ class IntelligentLLMRouter:
                 reasoning_strength=10,
                 context_window=200_000,
                 provider="anthropic",
-                model_id="claude-opus-4.1-20250501",
-                langchain_model_name="claude-opus-4.1-20250501"
+                model_id="claude-opus-4-1-20250805",
+                langchain_model_name="claude-opus-4-1-20250805"
             )
         ]
 
@@ -375,7 +375,6 @@ class IntelligentLLMRouter:
 
 _router = IntelligentLLMRouter(prefer_lightweight=True)
 
-# ---------- lightweight model cache ----------
 _MODEL_CACHE: _Dict[Tuple[str, str, float], _Any] = {}
 
 def _detect_ollama_models() -> list[str]: 
@@ -456,7 +455,7 @@ def _cached_chat_model(provider: str, model_name: str, temperature: float = 0.2)
         from langchain_ollama import ChatOllama 
         base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_HOST") 
         if base_url: 
-            m = ChatOllama(model=model_name, temperature=temperature, base_url=base_url) 
+            m = ChatOllama(model=model_name, temperature=temperature, base_url=base_url, timeout=120, max_retries=2) 
         else: 
             m = ChatOllama(model=model_name, temperature=temperature)
     else:

@@ -13,6 +13,9 @@ import difflib
 from datetime import datetime
 import re
 import json
+import ast
+from contextlib import nullcontext
+from io import StringIO
 
 try:
     import termios
@@ -33,15 +36,16 @@ from rich.text import Text
 from rich.markdown import Markdown
 from rich.rule import Rule
 from rich.align import Align
+from rich.columns import Columns
+from rich.table import Table
 from rich import box
 from pyfiglet import Figlet
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 warnings.filterwarnings("ignore", message=r"typing\.NotRequired is not a Python type.*")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"pydantic\._internal.*")
 
 from .config_core import resolve_provider as _resolve_provider_base
-from .config_core import get_model, get_model_info
+from .config_core import get_model, get_model_info, get_model_by_name
 
 from .agent.react import build_react_agent, build_deep_agent
 from .workflows.feature_impl import FEATURE_INSTR
@@ -49,6 +53,21 @@ from .workflows.bug_fix import BUGFIX_INSTR
 from .workflows.auto import AUTO_DEEP_INSTR
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
+import logging
+
+for _name in (
+    "langchain_google_genai",
+    "langchain_google_genai.chat_models",
+    "tenacity",
+    "tenacity.retry",
+    "httpx",
+    "urllib3",
+    "google",
+):
+    _log = logging.getLogger(_name)
+    _log.setLevel(logging.CRITICAL)
+    _log.propagate = False
+
 
 APP_HELP = """
 LangCode – ReAct + Tools + Deep (LangGraph) code agent CLI.
@@ -77,7 +96,8 @@ Examples:
   • langcode chat --router --priority cost --verbose
   • langcode feature "Add a dark mode toggle" --router --priority quality
   • langcode fix --log error.log --test-cmd "pytest -q" --router
-
+  • langcode tell me what’s going on in the codebase     (quick mode → analyze) 
+  • langcode fix this                                    (quick mode → fix; reads TTY log if available)
 Custom instructions:
   • Put project-specific rules in .langcode/langcode.md (created automatically).
   • From the launcher, select “Custom Instructions” to open your editor; or run `langcode instr`.
@@ -88,7 +108,11 @@ NEW:
   • In chat, type /select to return to the launcher without exiting.
 """
 
-app = typer.Typer(add_completion=False, help=APP_HELP.strip())
+app = typer.Typer( 
+    add_completion=False, 
+    help=APP_HELP.strip(), 
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}, 
+)
 console = Console()
 PROMPT = "[bold green]langcode[/bold green] [dim]›[/dim] "
 
@@ -98,6 +122,156 @@ _AGENT_CACHE_MAX = 6
 _IN_SELECTION_HUB = False
 
 ENV_FILENAMES = (".env", ".env.local")
+
+def _env_template_text(scope: str = "project") -> str:
+    """Return the standard .env template for project/global scopes."""
+    title = ".env — environment for LangCode" if scope == "project" else "Global .env — environment for LangCode"
+    return f"""# {title}
+# Fill only what you need; keep secrets safe.
+# Examples:
+# OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY=...
+# GEMINI_API_KEY=...
+# GROQ_API_KEY=...
+# LANGCHAIN_API_KEY=...
+# TAVILY_API_KEY=... (For web search)
+# LANGCHAIN_TRACING_V2=true
+# LANGCHAIN_PROJECT=langcode
+
+# Created {datetime.now().strftime('%Y-%m-%d %H:%M')} by LangCode
+"""
+
+GLOBAL_ENV_ENVVAR = "LANGCODE_GLOBAL_ENV"       
+LANGCODE_CONFIG_DIR_ENVVAR = "LANGCODE_CONFIG_DIR"  
+
+def _user_config_dir() -> Path:
+    """Cross-platform config dir: $LANGCODE_CONFIG_DIR | XDG | APPDATA | ~/.config/langcode."""
+    if os.getenv(LANGCODE_CONFIG_DIR_ENVVAR):
+        return Path(os.environ[LANGCODE_CONFIG_DIR_ENVVAR]).expanduser()
+    if platform.system().lower() == "windows":
+        base = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "LangCode"
+    xdg = os.getenv("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "langcode"
+    return Path.home() / ".config" / "langcode"
+
+def _global_env_path() -> Path:
+    """~/.config/langcode/.env (Linux/macOS), %APPDATA%/LangCode/.env (Windows), or $LANGCODE_GLOBAL_ENV."""
+    override = os.getenv(GLOBAL_ENV_ENVVAR)
+    if override:
+        return Path(override).expanduser()
+    if platform.system().lower() == "windows":
+        base = os.getenv("APPDATA") or (Path.home() / "AppData" / "Roaming")
+        return Path(base) / "LangCode" / ".env"
+    xdg = os.getenv("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "langcode" / ".env"
+    return Path.home() / ".config" / "langcode" / ".env"
+
+SESSIONS_DIR = _user_config_dir() / "sessions" 
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True) 
+ 
+def _current_tty_id() -> str: 
+    try: 
+        return os.path.basename(os.ttyname(sys.stdin.fileno())).replace("/", "_") 
+    except Exception: 
+        return f"ppid{os.getppid()}_pid{os.getpid()}" 
+ 
+def _tty_log_path(tty_id: Optional[str] = None) -> Path: 
+    name = (tty_id or os.environ.get("LANGCODE_TTY_ID") or _current_tty_id()).strip() or "default" 
+    return SESSIONS_DIR / f"{name}.log" 
+ 
+def _tail_bytes(path: Path, max_bytes: int = 200_000) -> str: 
+    try: 
+        with open(path, "rb") as f: 
+            f.seek(0, os.SEEK_END) 
+            size = f.tell() 
+            f.seek(max(0, size - max_bytes)) 
+            return f.read().decode("utf-8", "ignore") 
+    except Exception: 
+        return "" 
+ 
+_ERR_PATTERNS = [ 
+    r"Traceback \(most recent call last\):[\s\S]+?(?=\n{2,}|\Z)",             
+    r"(?:UnhandledPromiseRejection|Error:|TypeError:|ReferenceError:)[\s\S]+?(?=\n{2,}|\Z)", 
+    r"panic: [\s\S]+?(?=\n{2,}|\Z)",                                         
+    r"Exception(?: in thread.*)?:[\s\S]+?(?=\n{2,}|\Z)",                     
+    r"(FAIL|ERROR|E\s)[\s\S]+?(?=\n{2,}|\Z)",                                 
+    r"Compilation (error|failed):[\s\S]+?(?=\n{2,}|\Z)",                    
+] 
+ 
+def _extract_error_block(text: str) -> str: 
+    last = "" 
+    for pat in _ERR_PATTERNS: 
+        for m in re.finditer(pat, text, re.M): 
+            last = m.group(0) 
+    if last.strip(): 
+        return last.strip() 
+    # Fallback: last ~120 lines 
+    lines = text.strip().splitlines() 
+    return "\n".join(lines[-120:])
+
+
+def _ensure_global_env_file() -> Path:
+    """Create the global .env with the same template as local (if missing)."""
+    path = _global_env_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(_env_template_text("global"), encoding="utf-8")
+    return path
+
+def _edit_global_env_file() -> None:
+    """Open the global .env in an editor and show a diff stat after save."""
+    md_path = _ensure_global_env_file()
+    original = md_path.read_text(encoding="utf-8")
+
+    launched = _open_in_terminal_editor(md_path)
+    edited_text: Optional[str] = None
+
+    if not launched:
+        edited_text = click.edit(original, require_save=False)
+        if edited_text is None:
+            edited_text = _inline_capture_editor(original)
+        if edited_text is not None and edited_text != original:
+            md_path.write_text(edited_text, encoding="utf-8")
+    else:
+        edited_text = md_path.read_text(encoding="utf-8")
+
+    if edited_text is None:
+        console.print(Panel.fit(Text("No changes saved.", style="yellow"), border_style="yellow"))
+        return
+    if edited_text == original:
+        console.print(Panel.fit(Text("No changes saved (file unchanged).", style="yellow"), border_style="yellow"))
+        return
+
+    stats = _diff_stats(original, edited_text)
+    console.print(Panel.fit(
+        Text.from_markup(
+            f"Saved [bold]{md_path}[/bold]\n"
+            f"[green]+{stats['added']}[/green] / [red]-{stats['removed']}[/red] • total {stats['total_after']} lines"
+        ),
+        border_style="green"
+    ))
+
+def _load_global_env(*, override_existing: bool = False) -> Dict[str, Any]:
+    """Load the global env file into os.environ if it exists."""
+    path = _global_env_path()
+    applied = _load_env_file(path, override_existing=override_existing) if path.exists() else []
+    return {"path": str(path), "found": path.exists(), "applied_keys": applied}
+
+def _global_env_status_label() -> str:
+    """Short status for launcher/doctor."""
+    p = _global_env_path()
+    if p.exists():
+        try:
+            k = _count_env_keys_in_file(p)
+        except Exception:
+            k = 0
+        rel = os.path.relpath(str(p), str(Path.cwd()))
+        return f"edit…  ({rel}, {k} keys)"
+    return f"create…  ({_global_env_path()})"
+
 
 
 def _parse_env_text(text: str) -> Dict[str, str]:
@@ -198,24 +372,8 @@ def _ensure_env_file(project_dir: Path) -> Path:
     """
     path = (project_dir / ".env")
     if not path.exists():
-        template = f"""# .env — environment for LangCode
-# Fill only what you need; keep secrets safe.
-# Examples:
-# OPENAI_API_KEY=sk-...
-# ANTHROPIC_API_KEY=...
-# GOOGLE_API_KEY=...
-# GEMINI_API_KEY=...
-# GROQ_API_KEY=...
-# LANGCHAIN_API_KEY=...
-# TAVILY_API_KEY=... (For web search)
-# LANGCHAIN_TRACING_V2=true
-# LANGCHAIN_PROJECT=langcode
-
-# Created {datetime.now().strftime('%Y-%m-%d %H:%M')} by LangCode
-"""
-        path.write_text(template, encoding="utf-8")
+        path.write_text(_env_template_text("project"), encoding="utf-8")
     return path
-
 
 def _edit_env_file(project_dir: Path) -> None:
     """
@@ -254,35 +412,62 @@ def _edit_env_file(project_dir: Path) -> None:
     ))
 
 
+def _unwrap_exc(e: BaseException) -> BaseException:
+    """Drill down through ExceptionGroup/TaskGroup, __cause__, and __context__ to the root error."""
+    seen = set()
+    while True:
+        # Python 3.11 ExceptionGroup (incl. TaskGroup)
+        inner = getattr(e, "exceptions", None)
+        if inner:
+            e = inner[0]
+            continue
+        if getattr(e, "__cause__", None) and e.__cause__ not in seen:
+            seen.add(e)
+            e = e.__cause__
+            continue
+        if getattr(e, "__context__", None) and e.__context__ not in seen:
+            seen.add(e)
+            e = e.__context__
+            continue
+        return e
+
+def _friendly_agent_error(e: BaseException) -> str:
+    root = _unwrap_exc(e)
+    name = root.__class__.__name__
+    msg = (str(root) or "").strip() or "(no details)"
+    return (
+        "Sorry, a tool run failed. Please try again :)\n\n"
+        f"• {name}: {msg}\n\n"
+    )
+
+
 def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = True) -> None:
     """
-    Load env from project_dir; if no .env / .env.local, optionally offer to create one inline.
-    Called at startup and at each command entry.
+    Load env from project_dir; if none exists, automatically fall back to the global env.
+    Never prompt to create a project .env.
     """
     info = _load_env_files(project_dir, override_existing=False)
     if info["files_found"]:
-        return  
-
-    if not interactive_prompt_if_missing:
         return
+
+    # Ensure a global .env exists, then load it (silent fallback).
+    gpath = _ensure_global_env_file()
+    g = _load_global_env(override_existing=False)
+
+    try:
+        kcount = _count_env_keys_in_file(gpath)
+    except Exception:
+        kcount = len(g.get("applied_keys") or [])
 
     console.print(Panel.fit(
         Text.from_markup(
-            f"No [bold].env[/bold] found in [bold]{project_dir}[/bold].\n"
-            "Create one now to set your API keys and configuration?"
+            f"Using [bold]global .env[/bold] at [bold]{g['path']}[/bold] "
+            f"([green]{kcount} keys[/green])."
         ),
         title="Environment",
-        border_style="cyan",
+        border_style="green",
         box=box.ROUNDED,
     ))
-    answer = console.input("[bold]Create .env now?[/bold] [Y/n]: ").strip().lower()
-    if answer in ("", "y", "yes"):
-        _edit_env_file(project_dir)
-        _load_env_files(project_dir, override_existing=False)
-        console.print(Panel.fit(Text("Environment loaded from .env.", style="green"), border_style="green"))
-    else:
-        console.print(Text("Continuing without .env. You can add it later from the launcher → Environment.", style="dim"))
-
 
 def _agent_cache_get(key: Tuple[str, str, str, str, bool]):
     if key in _AGENT_CACHE:
@@ -296,9 +481,6 @@ def _agent_cache_put(key: Tuple[str, str, str, str, bool], value: Any) -> None:
     while len(_AGENT_CACHE) > _AGENT_CACHE_MAX:
         _AGENT_CACHE.popitem(last=False)
 
-# =========================
-# Custom Instructions (.langcode/langcode.md)
-# =========================
 
 LANGCODE_DIRNAME = ".langcode"
 LANGCODE_FILENAME = "langcode.md"
@@ -334,7 +516,7 @@ def _ensure_mcp_json(project_dir: Path) -> Path:
                     "transport": "stdio",
                     "env": {
                         "GITHUB_TOKEN": "$GITHUB_API_KEY",
-                        "GITHUB_TOOLSETS": "repos,issues,pull_requests,actions,code_security"
+                        # "GITHUB_TOOLSETS": "repos,issues,pull_requests,actions,code_security"
                     }
                 }
             }
@@ -498,7 +680,6 @@ def _pick_terminal_editor() -> Optional[List[str]]:
             if os.path.exists(vim_path):
                 return [vim_path]
 
-        # Also check if 'vim.exe' is in PATH but not found by shutil.which
         try:
             result = subprocess.run(["where", "vim"], capture_output=True, text=True, check=False)
             if result.returncode == 0 and result.stdout.strip():
@@ -647,6 +828,8 @@ def session_banner(
     tips: Optional[List[str]] = None,
     model_info: Optional[Dict[str, Any]] = None,
     router_enabled: bool = False,
+    deep_mode: bool = False,
+    command_name: Optional[str] = None,
 ) -> Panel:
     title = Text(title_text, style="bold magenta")
     body = Text()
@@ -664,6 +847,10 @@ def session_banner(
     badge = Text()
     if router_enabled:
         badge.append("  [ROUTER ON]", style="bold green")
+    if command_name: 
+        badge.append(f"  [{command_name}]", style="bold blue") 
+    if deep_mode: 
+        badge.append("  [DEEP MODE]", style="bold magenta")
     if apply:
         badge.append("  [APPLY MODE]", style="bold red")
     if test_cmd:
@@ -717,6 +904,8 @@ def _print_session_header(
     tips: Optional[List[str]] = None,
     model_info: Optional[Dict[str, Any]] = None,
     router_enabled: bool = False,
+    deep_mode: bool = False,
+    command_name: Optional[str] = None,
 ) -> None:
     console.clear()
     print_langcode_ascii(console, text="LangCode", font="ansi_shadow", gradient="dark_to_light")
@@ -731,6 +920,8 @@ def _print_session_header(
             tips=tips,
             model_info=model_info,
             router_enabled=router_enabled,
+            deep_mode=deep_mode,
+            command_name=command_name
         )
     )
     console.print(Rule(style="green"))
@@ -754,7 +945,37 @@ def _looks_like_markdown(text: str) -> bool:
     return False
 
 
-def _panel_agent_output(text: str, title: str = "Agent") -> Panel:
+def _to_text(content: Any) -> str:
+    """Coerce Claude-style content blocks (list[dict|str]) into a single string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict):
+                t = p.get("text") or p.get("data") or p.get("content")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif isinstance(p, str):
+                parts.append(p)
+            else:
+                parts.append(str(p))
+        return "\n".join(parts)
+    return str(content)
+
+def _normalize_chat_history_for_anthropic(history: list) -> list:
+    """Return a copy of history with str content only (prevents .strip() on lists)."""
+    out = []
+    for msg in history:
+        try:
+            c = getattr(msg, "content", "")
+            out.append(msg.__class__(content=_to_text(c)))
+        except Exception:
+            # fall back to best-effort string
+            out.append(msg.__class__(content=str(getattr(msg, "content", ""))))
+    return out
+
+def _panel_agent_output(text: str, title: str = "Agent", model_label: Optional[str] = None) -> Panel:
     """
     Render agent output full-width, with clean wrapping and proper Markdown
     when appropriate. This avoids the 'half-cut' panel look.
@@ -762,22 +983,22 @@ def _panel_agent_output(text: str, title: str = "Agent") -> Panel:
     text = (text or "").rstrip()
 
     if _looks_like_markdown(text):
-        body = Markdown(text)  # Rich will wrap Markdown nicely
+        body = Markdown(text)  
     else:
         t = Text.from_ansi(text) if "\x1b[" in text else Text(text)
-        # ensure long tokens (e.g., URLs) don't blow out the width
         t.no_wrap = False
         t.overflow = "fold"
         body = t
 
-    # Use expand=True instead of Panel.fit(...) so the panel spans the console width
     return Panel(
         body,
         title=title,
         border_style="cyan",
         box=box.ROUNDED,
         padding=(1, 2),
-        expand=True,    
+        expand=True,   
+        subtitle=(Text(f"Model: {model_label}", style="dim") if model_label else None),
+        subtitle_align="right", 
     )
 
 def _panel_router_choice(info: Dict[str, Any]) -> Panel:
@@ -800,18 +1021,169 @@ def _panel_router_choice(info: Dict[str, Any]) -> Panel:
         )
     return Panel.fit(body, title="Model Selection", border_style="green", box=box.ROUNDED, padding=(0, 1))
 
-def _show_loader() -> Progress:
-    progress = Progress(
-        SpinnerColumn(spinner_name="dots", style=Style(color="green")),
-        TextColumn("[progress.description]{task.description}", style=Style(color="white")),
-        transient=True,
-    )
-    progress.add_task("[bold]Processing...", total=None)
-    return progress
+def _show_loader():
+    """Spinner that doesn't interfere with interactive prompts (y/n, input, click.confirm)."""
+    return console.status("[bold]Processing...[/bold]", spinner="dots", spinner_style="green")
+
+
+import builtins
+
+_CURRENT_LIVE = None 
+
+class _InputPatch:
+    def __init__(self, console: Console, title: str = "Consent"):
+        self.console = console
+        self.title = title
+        self._orig_input = None
+
+    def __enter__(self):
+        self._orig_input = builtins.input
+
+        def _rich_input(prompt: str = "") -> str:
+            live = globals().get("_CURRENT_LIVE", None)
+            cm = live.pause() if getattr(live, "pause", None) else nullcontext()
+            with cm:
+                body = Text()
+                msg = prompt.strip() or "Action requires your confirmation."
+                body.append(msg + "\n\n")
+                body.append("Type ", style="dim")
+                body.append("Y", style="bold green")
+                body.append("/", style="dim")
+                body.append("N", style="bold red")
+                body.append(" and press Enter.", style="dim")
+
+                panel = Panel(
+                    body,
+                    title=self.title,
+                    border_style="yellow",
+                    box=box.ROUNDED,
+                    padding=(1, 2),
+                )
+                self.console.print(panel)
+
+                answer = self.console.input("[bold yellow]›[/bold yellow] ").strip()
+                return answer
+
+        builtins.input = _rich_input
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        builtins.input = self._orig_input
+        return False
+
+
+def _coerce_sequential_todos(todos: list[dict] | None) -> list[dict]:
+    """Ensure visual progression is strictly sequential."""
+    todos = list(todos or [])
+    blocked = False
+    out: list[dict] = []
+    for it in todos:
+        st = (it.get("status") or "pending").lower().replace("-", "_")
+        if blocked and st in {"in_progress", "completed"}:
+            st = "pending"
+        if st != "completed":
+            blocked = True
+        out.append({**it, "status": st})
+    return out
+
+def _render_todos_panel(todos: list[dict]) -> Panel:
+    todos = _coerce_sequential_todos(todos)
+
+    if not todos:
+        return Panel(Text("No TODOs yet.", style="dim"), title="TODOs", border_style="blue", box=box.ROUNDED)
+    table = Table.grid(padding=(0, 1))
+    table.add_column(justify="right", width=3, no_wrap=True)
+    table.add_column()
+
+    ICON = {"pending": "○", "in_progress": "◔", "completed": "✓"}
+    STYLE = {"pending": "dim", "in_progress": "yellow", "completed": "green"}
+
+    for i, it in enumerate(todos, 1):
+        status = (it.get("status") or "pending").lower().replace("-", "_")
+        status = status if status in ICON else "pending"
+        content = (it.get("content") or "").strip() or "(empty)"
+        style = STYLE[status]
+        mark = ICON[status]
+        text = Text(content, style=style)
+        if status == "completed":
+            text.stylize("strike")
+        table.add_row(f"{i}.", Text.assemble(Text(mark + " ", style=style), text))
+    return Panel(table, title="TODOs", border_style="blue", box=box.ROUNDED, padding=(1,1), expand=True)
+
+def _diff_todos(before: list[dict] | None, after: list[dict] | None) -> list[str]:
+    before = _coerce_sequential_todos(before or [])
+    after = _coerce_sequential_todos(after or [])
+    changes: list[str] = []
+    for i in range(min(len(before), len(after))):
+        b = (before[i].get("status") or "").lower()
+        a = (after[i].get("status") or "").lower()
+        if b != a:
+            content = (after[i].get("content") or before[i].get("content") or "").strip()
+            changes.append(f"[{i+1}] {content} → {a}")
+    if len(after) > len(before):
+        for j in range(len(before), len(after)):
+            content = (after[j].get("content") or "").strip()
+            changes.append(f"[+ ] {content} (added)")
+    if len(before) > len(after):
+        for j in range(len(after), len(before)):
+            content = (before[j].get("content") or "").strip()
+            changes.append(f"[- ] {content} (removed)")
+    return changes
+
+def _complete_all_todos(todos: list[dict] | None) -> list[dict]: 
+    """ 
+    Mark any non-completed TODOs as completed. Invoked right before rendering 
+    the final answer so the board reflects finished work the agent may have 
+    forgotten to mark as done. 
+    """ 
+    todos = list(todos or []) 
+    out: list[dict] = [] 
+    for it in todos: 
+        st = (it.get("status") or "pending").lower().replace("-", "_") 
+        if st != "completed": 
+            it = {**it, "status": "completed"} 
+        out.append(it) 
+    return out
 
 def _short(s: str, n: int = 280) -> str:
     s = s.replace("\r\n", "\n").strip()
     return s if len(s) <= n else s[:n] + " …"
+
+
+
+class _TodoLive(BaseCallbackHandler):
+    """Stream TODO updates when planner tools return Command(update={'todos': ...})."""
+    def __init__(self, console: Console):
+        self.c = console
+        self.prev: list[dict] = []
+
+    def on_tool_end(self, output, **kwargs):
+        s = str(output)
+        if "Command(update=" not in s or "'todos':" not in s:
+            return
+        m = re.search(r"Command\\(update=(\\{.*\\})\\)$", s, re.S)
+        if not m:
+            m = re.search(r"update=(\\{.*\\})", s, re.S)
+        if not m:
+            return
+        try:
+            data = ast.literal_eval(m.group(1)) 
+            todos = data.get("todos")
+            if not isinstance(todos, list):
+                return
+            changes = _diff_todos(self.prev, todos)
+            self.prev = todos
+            if todos:
+                self.c.print(_render_todos_panel(todos))
+            if changes:
+                self.c.print(Panel(Text("\\n".join(changes)),
+                                   title="Progress",
+                                   border_style="yellow",
+                                   box=box.ROUNDED,
+                                   expand=True))
+        except Exception:
+            pass
+
 
 class _RichDeepLogs(BaseCallbackHandler):
     """
@@ -1006,7 +1378,7 @@ def _render_choice(label: str, value: str, focused: bool, enabled: bool = True) 
     style = "bold white" if focused and enabled else ("dim" if not enabled else "white")
     val_style = "bold cyan" if enabled else "dim"
     t = Text(chev + label + ": ", style=style)
-    t.append(value, style=val_style)
+    t.append(str(value), style=val_style)
     return t
 
 def _info_panel_for(field: str) -> Panel:
@@ -1040,7 +1412,7 @@ def _list_ollama_models() -> list[str]:
                     for it in data: 
                         n = (it.get("name") or it.get("model") or "").strip() 
                         if n: 
-                            names.append(n.split(":")[0]) 
+                            names.append(n)
                     return list(dict.fromkeys(names)) 
             except Exception: 
                 pass 
@@ -1051,11 +1423,39 @@ def _list_ollama_models() -> list[str]:
             for ln in lines[1:]: 
                 name = ln.split()[0] 
                 if name: 
-                    out.append(name.split(":")[0]) 
+                    out.append(name)
             return list(dict.fromkeys(out)) 
     except Exception: 
         pass 
     return []
+
+def _provider_model_choices(provider: Optional[str]) -> list[str]: 
+    """Return model ids (LangChain names) to pick from for a provider.""" 
+    if not provider: 
+        return [] 
+    if provider == "gemini": 
+        return [
+            "gemini-2.0-flash-lite", 
+            "gemini-2.0-flash", 
+            "gemini-2.5-flash-lite", 
+            "gemini-2.5-flash", 
+            "gemini-2.5-pro", 
+        ] 
+    if provider == "anthropic": 
+        return [ 
+            "claude-3-5-haiku-20241022", 
+            "claude-3-7-sonnet-20250219", 
+            "claude-opus-4-1-20250805", 
+        ] 
+    if provider == "openai": 
+        return [ 
+            "gpt-4o-mini", 
+            "gpt-4o", 
+        ] 
+    if provider == "ollama": 
+        return _list_ollama_models() 
+    return []
+
 
 def _help_content() -> Panel:
     """
@@ -1095,7 +1495,7 @@ def _help_content() -> Panel:
         ("feature", "Plan → edit → verify a feature. Use --apply and --test-cmd to run tests."),
         ("fix",     "Diagnose & patch from logs. Accepts --log. Supports --apply and --test-cmd."),
         ("analyze", "Deep repo insights (LangGraph). Great for overviews & architecture questions."),
-        ("instructions",   "Open or create .langcode/langcode.md (project rules/instructions)."),
+        ("instr",   "Open or create .langcode/langcode.md (project rules/instructions)."),
     ]
     for i, (name, desc) in enumerate(cmd_rows):
         cmd_tbl.add_row(shade(name, p_cmd[i % len(p_cmd)]), desc)
@@ -1185,10 +1585,20 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
     apply_enabled = state["command"] in ("feature", "fix")
     apply_val = "on" if (state["apply"] and apply_enabled) else ("off" if apply_enabled else "n/a")
     llm_val = state["llm"] or "(auto)"
+    if state["llm"] == "ollama" and state.get("ollama_model") and not state.get("model_override"): 
+        model_val = state["ollama_model"]
+    else:
+        model_val = state.get("model_override", "(default)")
+
     proj_val = str(state["project_dir"])
     tests_val = state["test_cmd"] or "(none)"
-    ollama_names = _list_ollama_models() if state["llm"] == "ollama" else []
-    start_enabled = not (state["llm"] == "ollama" and not ollama_names)
+    ollama_names = _list_ollama_models() if state["llm"] == "ollama" else [] 
+    start_enabled = True 
+    if state["llm"] == "ollama": 
+        if not ollama_names: 
+            start_enabled = False 
+        elif state.get("ollama_model") and state["ollama_model"] not in ollama_names: 
+            start_enabled = False
     md_path = (state["project_dir"] / LANGCODE_DIRNAME / LANGCODE_FILENAME)
     if md_path.exists():
         try:
@@ -1202,6 +1612,7 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
 
     env_val = _env_status_label(state["project_dir"])
     mcp_val = _mcp_status_label(state["project_dir"])
+    model_enabled = bool(state["llm"]) and not state["router"]
 
     labels = [
         ("Command", cmd_val, True),
@@ -1211,8 +1622,10 @@ def _draw_launcher(state: Dict[str, Any], focus_index: int, show_help: bool = Fa
         ("Autopilot", autopilot_val, auto_enabled),
         ("Apply", apply_val, apply_enabled),
         ("LLM", llm_val, True),
+        ("Model", model_val, model_enabled),
         ("Project", proj_val, True),
         ("Environment", env_val, True),
+        ("Global Environment", _global_env_status_label(), True),
         ("Custom Instructions", instr_val, True),
         ("MCP Config", mcp_val, True),  
         ("Tests", tests_val, state["command"] in ("feature", "fix")),
@@ -1266,10 +1679,12 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     state = dict(initial_state)
     focus_index = 0
     show_help = False
-    fields_order = [
+    _FIELDS_ORDER = (
         "Command", "Engine", "Router", "Priority", "Autopilot", "Apply",
-        "LLM", "Project", "Environment", "Custom Instructions", "MCP Config", "Tests", "Start"
-    ]
+        "LLM", "Model", "Project", "Environment", "Global Environment",
+        "Custom Instructions", "MCP Config", "Tests", "Start"
+    )
+    fields_order = list(_FIELDS_ORDER)
 
     def toggle(field: str, direction: int) -> None:
         if field == "Command":
@@ -1299,6 +1714,10 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             cur = state["llm"]
             i = (opts.index(cur) + direction) % len(opts)
             state["llm"] = opts[i]
+            state["model_override"] = None
+            os.environ.pop("LANGCODE_MODEL_OVERRIDE", None)
+        elif field == "Model":
+            return 
         elif field == "Project":
             path = console.input("[bold]Project directory[/bold] (Enter to keep current): ").strip()
             if path:
@@ -1314,6 +1733,14 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 _load_env_files(state["project_dir"], override_existing=False)
             except Exception as e:
                 console.print(Panel.fit(Text(f"Failed to edit environment: {e}", style="bold red"), border_style="red"))
+        
+        elif field == "Global Environment":
+            try:
+                _edit_global_env_file()
+                _load_global_env(override_existing=False)
+            except Exception as e:
+                console.print(Panel.fit(Text(f"Failed to edit global environment: {e}", style="bold red"), border_style="red"))
+
         elif field == "Custom Instructions":
             try:
                 _edit_langcode_md(state["project_dir"])
@@ -1350,23 +1777,18 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if key == _Key.RIGHT:
             toggle(fields_order[focus_index], +1)
             continue
-        if key == _Key.ENTER:
-            field = fields_order[focus_index]
-            if field in ("Project", "Environment", "Custom Instructions", "MCP Config", "Tests"):
-                toggle(field, +1)
-                continue
-            if field == "Start":
-                return state
-            toggle(field, +1)
-            continue
+
         if key == _Key.ENTER:
             field = fields_order[focus_index]
 
-            if field in ("Project", "Environment", "Custom Instructions", "MCP Config", "Tests"):
+            if field in ("Project", "Environment", "Global Environment", "Custom Instructions", "MCP Config", "Tests"):
                 toggle(field, +1)
                 continue
 
-            if field == "LLM" and state["llm"] == "ollama":
+            if field == "LLM": 
+                if state["llm"] != "ollama": 
+                    toggle("LLM", +1)
+                    continue
                 names = _list_ollama_models()
                 if not names:
                     console.print(Panel.fit(Text("No Ollama models detected. Install one (e.g., `ollama pull llama3.1`).", style="bold yellow"), border_style="yellow"))
@@ -1395,6 +1817,48 @@ def _launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 console.input("Press Enter to continue...")
                 continue
 
+
+
+            if field == "Model": 
+                if not state["llm"] or state["router"]: 
+                    continue 
+                choices = _provider_model_choices(state["llm"]) 
+                if not choices: 
+                    console.print(Panel.fit(Text("No selectable models found for this provider.", style="yellow"), 
+                                            border_style="yellow")) 
+                    console.input("Press Enter to continue...") 
+                    continue 
+                console.print(Panel.fit(Text("Select a model by number (empty to clear to default):", style="bold"), 
+                                        border_style="cyan")) 
+                for i, name in enumerate(choices, 1): 
+                    mark = "✓ " if name == state.get("model_override") else "  " 
+                    console.print(f"  {mark}{i}. {name}") 
+                choice = console.input("Your choice: ").strip() 
+                if not choice: 
+                    state["model_override"] = None 
+                    os.environ.pop("LANGCODE_MODEL_OVERRIDE", None) 
+                else: 
+                    try: 
+                        idx = int(choice) - 1 
+                        if 0 <= idx < len(choices): 
+                            state["model_override"] = choices[idx] 
+                            os.environ["LANGCODE_MODEL_OVERRIDE"] = choices[idx] 
+                            console.print(Panel.fit(Text(f"Selected: {choices[idx]}", style="green"), 
+                                                    border_style="green")) 
+                        else: 
+                            console.print(Panel.fit(Text("Invalid selection.", style="yellow"), border_style="yellow")) 
+                    except Exception: 
+                        console.print(Panel.fit(Text("Invalid input.", style="yellow"), border_style="yellow")) 
+                console.input("Press Enter to continue...") 
+                continue
+
+
+
+
+
+
+
+
             if field == "Start":
                 if state["llm"] == "ollama" and not _list_ollama_models():
                     console.print(Panel.fit(Text("Cannot start: no Ollama models installed.", style="bold red"), border_style="red"))
@@ -1414,6 +1878,7 @@ def _default_state() -> Dict[str, Any]:
         "project_dir": Path.cwd(),
         "test_cmd": None,
         "ollama_model": None,
+        "model_override": None
     }
 
 def _dispatch_from_state(chosen: Dict[str, Any]) -> Optional[str]:
@@ -1512,14 +1977,168 @@ def _selection_hub(initial_state: Optional[Dict[str, Any]] = None) -> None:
     finally:
         _IN_SELECTION_HUB = False
 
-@app.callback(invoke_without_command=True)
-def _root(ctx: typer.Context):
-    if ctx.invoked_subcommand is None:
-        _selection_hub(_default_state())
-        raise typer.Exit()
+@app.command(help="Run a command inside a PTY and capture output to a session log (used by `fix --from-tty`).") 
+def wrap( 
+    cmd: List[str] = typer.Argument(..., help="Command to run (e.g., pytest -q)"), 
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False), 
+    tty_id: Optional[str] = typer.Option(None, "--tty-id", help="Override session id (default: auto per TTY)"), 
+): 
+    log_path = _tty_log_path(tty_id) 
+    log_path.parent.mkdir(parents=True, exist_ok=True) 
+    console.print(Panel.fit(Text(f"Logging to: {log_path}", style="dim"), title="TTY Capture", border_style="cyan")) 
+    os.chdir(project_dir) 
+    if platform.system().lower().startswith("win"): 
+        with open(log_path, "a", encoding="utf-8", errors="ignore") as f: 
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) 
+            assert proc.stdout is not None 
+            for line in proc.stdout: 
+                sys.stdout.write(line) 
+                f.write(line) 
+            rc = proc.wait() 
+            raise typer.Exit(rc) 
+    else: 
+        import pty, os as _os 
+        with open(log_path, "a", encoding="utf-8", errors="ignore") as f: 
+            old_env = dict(_os.environ) 
+            _os.environ["LANGCODE_TTY_LOG"] = str(log_path) 
+            _os.environ["LANGCODE_TTY_ID"] = tty_id or _current_tty_id() 
+            def _tee(master_fd): 
+                data = _os.read(master_fd, 1024) 
+                if data: 
+                    try: 
+                        f.write(data.decode("utf-8", "ignore")) 
+                        f.flush() 
+                    except Exception: 
+                        pass 
+                return data 
+            try: 
+                status = pty.spawn(cmd, master_read=_tee) 
+            finally: 
+                _os.environ.clear(); _os.environ.update(old_env) 
+            raise typer.Exit(status >> 8) 
+ 
+@app.command(help="Open a logged subshell. Anything you run here is captured for `fix --from-tty`.") 
+def shell( 
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False), 
+    tty_id: Optional[str] = typer.Option(None, "--tty-id", help="Override session id (default: auto per TTY)"), 
+): 
+    sh = os.environ.get("SHELL") if platform.system().lower() != "windows" else os.environ.get("COMSPEC", "cmd.exe") 
+    if not sh: 
+        sh = "/bin/bash" if platform.system().lower() != "windows" else "cmd.exe" 
+    return wrap([sh], project_dir=project_dir, tty_id=tty_id)
+
+
+
+@app.command(help="Run environment checks for providers, tools, and MCP.")
+def doctor(
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False)
+):
+    _bootstrap_env(project_dir, interactive_prompt_if_missing=False)
+
+    def yes(x): return Text("✔ " + x, style="green")
+    def no(x):  return Text("✖ " + x, style="red")
+    rows = []
+
+    rows.append(yes(f"Python {sys.version.split()[0]} on {platform.platform()}"))
+
+    for tool in ["git", "npx", "node", "ollama"]:
+        rows.append(yes(f"{tool} found") if shutil.which(tool) else no(f"{tool} missing"))
+
+    provider_keys = {
+        "OPENAI_API_KEY": "OpenAI",
+        "ANTHROPIC_API_KEY": "Anthropic",
+        "GOOGLE_API_KEY": "Gemini",
+        "GEMINI_API_KEY": "Gemini (alt)",
+        "GROQ_API_KEY": "Groq",
+        "TOGETHER_API_KEY": "Together",
+        "FIREWORKS_API_KEY": "Fireworks",
+        "PERPLEXITY_API_KEY": "Perplexity",
+        "DEEPSEEK_API_KEY": "DeepSeek",
+        "TAVILY_API_KEY": "Tavily (web search)"
+    }
+    provider_panel = Table.grid(padding=(0,2))
+    provider_panel.add_column("Provider")
+    provider_panel.add_column("Status")
+    for env, label in provider_keys.items():
+        ok = env in os.environ and bool(os.environ.get(env, "").strip())
+        provider_panel.add_row(label, ("[green]OK[/green]" if ok else "[red]missing[/red]") + f"  [dim]{env}[/dim]")
+
+    # MCP config
+    mcp_path = _mcp_target_path(project_dir)
+    mcp_status = "exists" if mcp_path.exists() else "missing"
+    mcp_card = Panel(Text(f"{mcp_status}: {os.path.relpath(mcp_path, project_dir)}"), title="MCP", border_style=("green" if mcp_path.exists() else "red"))
+
+    ollama = shutil.which("ollama")
+    if ollama:
+        models = _list_ollama_models()
+        oll_text = ", ".join(models[:6]) + (" …" if len(models) > 6 else "") if models else "(none installed)"
+        oll_card = Panel(Text(oll_text), title="Ollama models", border_style=("green" if models else "yellow"))
+    else:
+        oll_card = Panel(Text("ollama not found"), title="Ollama", border_style="red")
+
+    gpath = _global_env_path()
+    gexists = gpath.exists()
+    gkeys = _count_env_keys_in_file(gpath) if gexists else 0
+    gmsg = f"{'exists' if gexists else 'missing'}: {gpath}\nkeys: {gkeys}"
+    global_card = Panel(Text(gmsg), title="Global .env", border_style=("green" if gexists else "red"))
+
+    console.print(Panel(Align.left(Text.assemble(*[r + Text("\n") for r in rows])), title="System", border_style="cyan"))
+    console.print(Panel(provider_panel, title="Providers", border_style="cyan"))
+    console.print(Columns([mcp_card, oll_card, global_card]))
+    console.print(Panel(Text("Tip: run 'langcode instr' to set project rules; edit environment via the launcher."), border_style="blue"))
+
+
+
+
+def _quick_route_free_text(free_text: str, project_dir: Path) -> Optional[str]: 
+    """Route free-text to analyze/fix/chat based on simple intent heuristics.""" 
+    t = free_text.lower().strip() 
+    # Heuristics (intentionally simple; you can swap for an LLM classifier later) 
+    if any(k in t for k in ["fix", "error", "traceback", "stack", "crash", "red tests", "failing", "broken"]): 
+        # Try to pull recent error from TTY capture (see wrap/shell below) 
+        return fix( 
+            request=free_text, 
+            log=None, 
+            project_dir=project_dir, 
+            from_tty=True,  # new flag added below 
+            router=False, 
+            verbose=False, 
+        ) 
+    if any(k in t for k in ["what's going on", "whats going on", "overview", "summary", "explain the codebase", "architecture"]): 
+        analyze( 
+            request=free_text, 
+            project_dir=project_dir, 
+            router=False, 
+            verbose=False, 
+        ) 
+        return None 
+    # default: chat 
+    return chat( 
+        message=[free_text], 
+        project_dir=project_dir, 
+        mode="react", 
+        router=False, 
+        verbose=False, 
+    ) 
+ 
+@app.callback(invoke_without_command=True) 
+def _root( 
+    ctx: typer.Context, 
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False), 
+): 
+    if ctx.invoked_subcommand is not None: 
+        return 
+    # If the user passed free-text (e.g., `langcode fix this`) → quick mode 
+    extras = [a for a in ctx.args if not a.startswith("-")] 
+    if extras: 
+        return _quick_route_free_text(" ".join(extras), project_dir) 
+    # Otherwise open the launcher as before 
+    _selection_hub() 
+    raise typer.Exit()
 
 @app.command(help="Open an interactive chat with the agent. Modes: react | deep (default: react). Use --auto in deep mode for full autopilot (plan+act with no questions).")
 def chat(
+    message: Optional[List[str]] = typer.Argument(None, help="Optional initial message to send (quotes not required)."),
     llm: Optional[str] = typer.Option(None, "--llm", help="anthropic | gemini | openai | ollama"),
     project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
     mode: str = typer.Option("react", "--mode", help="react | deep"),
@@ -1534,6 +2153,8 @@ def chat(
       - "select": user requested to return to launcher
       - None: normal return (caller may continue)
     """
+    from rich.live import Live  # local import so you don't have to change global imports
+
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
     priority = (priority or "balanced").lower()
@@ -1548,7 +2169,15 @@ def chat(
     session_title = "LangChain Code Agent • Deep Chat" if mode == "deep" else "LangChain Code Agent • Chat"
     if mode == "deep" and auto:
         session_title += " (Auto)"
-    _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
+    _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router, deep_mode=(mode == "deep"), command_name="chat")
+
+    input_queue: List[str] = [] 
+ 
+    if isinstance(message, list): 
+        first_msg = " ".join(message).strip() 
+        if first_msg: 
+            input_queue.append(first_msg)
+
 
     history: list = []
     msgs: list = []
@@ -1561,7 +2190,13 @@ def chat(
 
     static_agent = None
     if not router:
-        chosen_llm = get_model(provider) if provider in {"openai", "ollama"} else None
+        env_override = os.getenv("LANGCODE_MODEL_OVERRIDE") 
+        chosen_llm = None 
+        if env_override: 
+            chosen_llm = get_model_by_name(provider, env_override) 
+        else: 
+            chosen_llm = get_model(provider)
+
         if mode == "deep":
             seed = AUTO_DEEP_INSTR if auto else None
             static_agent = _build_deep_agent_with_optional_llm(
@@ -1574,18 +2209,88 @@ def chat(
 
     prio_limits = {"speed": 30, "cost": 35, "balanced": 45, "quality": 60}
 
+    # ----- live TODO callback (no logs; updates the same table) -----------------
+    import re as _re, ast as _ast, json as _json
+    from langchain_core.callbacks import BaseCallbackHandler
+
+    class _TodoLiveMinimal(BaseCallbackHandler):
+        """Updates the single TODO table in-place; no extra logs."""
+        def __init__(self, live: Live):
+            self.live = live
+            self.todos: list[dict] = []
+            self.seen = False
+
+        def _extract_todos(self, payload) -> Optional[list]:
+            if isinstance(payload, dict):
+                if isinstance(payload.get("todos"), list):
+                    return payload["todos"]
+                upd = payload.get("update")
+                if isinstance(upd, dict) and isinstance(upd.get("todos"), list):
+                    return upd["todos"]
+
+            upd = getattr(payload, "update", None)
+            if isinstance(upd, dict) and isinstance(upd.get("todos"), list):
+                return upd["todos"]
+
+            s = str(payload)
+            m = _re.search(r"Command\([^)]*update=(\{.*\})\)?$", s, _re.S) or _re.search(r"update=(\{.*\})", s, _re.S)
+            if m:
+                try:
+                    data = _ast.literal_eval(m.group(1))
+                    if isinstance(data, dict) and isinstance(data.get("todos"), list):
+                        return data["todos"]
+                except Exception:
+                    pass
+            jm = _re.search(r"(\{.*\"todos\"\s*:\s*\[.*\].*\})", s, _re.S)
+            if jm:
+                try:
+                    data = _json.loads(jm.group(1))
+                    if isinstance(data.get("todos"), list):
+                        return data["todos"]
+                except Exception:
+                    pass
+            return None
+
+        def _render(self, todos: list[dict]):
+            todos = _coerce_sequential_todos(todos)
+            self.todos = todos
+            self.seen = True
+            self.live.update(_render_todos_panel(todos))
+
+        def on_tool_end(self, output, **kwargs):
+            t = self._extract_todos(output)
+            if t is not None:
+                self._render(t)
+
+        def on_chain_end(self, outputs, **kwargs):
+            t = self._extract_todos(outputs)
+            if t is not None:
+                self._render(t)
+
+
     try:
         while True:
-            user = console.input(PROMPT).strip()
+            if input_queue:
+                user = input_queue.pop(0)
+            else:
+                user = console.input(PROMPT).strip()
+
             if not user:
                 continue
 
             low = user.lower()
             if low in {"cls", "clear", "/clear"}:
-                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
+                _print_session_header(
+                    session_title, provider, project_dir,
+                    interactive=True, router_enabled=router,
+                    deep_mode=(mode == "deep"), command_name="chat"
+                )
                 history.clear()
                 msgs.clear()
+                last_todos = []
+                last_files = {}
                 continue
+
             if low in {"select", "/select", "/menu", ":menu"}:
                 console.print("[cyan]Returning to launcher…[/cyan]")
                 if _IN_SELECTION_HUB:
@@ -1602,11 +2307,12 @@ def chat(
                     "test_cmd": None,
                 })
                 return "quit"
+
             if low in {"exit", "quit", ":q", "/exit", "/quit"}:
                 return "quit"
-            
+
             if low in {"help", "/help", ":help"}:
-                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router)
+                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router, deep_mode=(mode == "deep"), command_name="chat")
                 console.print(_help_content())
                 continue
 
@@ -1615,9 +2321,9 @@ def chat(
                     console.print(Panel.fit(Text("Memory & stats are available in deep mode only.", style="yellow"),
                                             border_style="yellow"))
                     continue
-                from rich.table import Table
+                from rich.table import Table as _Table
                 if low == "/memory":
-                    t = Table.grid(padding=(0, 2))
+                    t = _Table.grid(padding=(0, 2))
                     t.add_row(Text("Thread", style="bold"), Text(deep_thread_id))
                     t.add_row(Text("DB", style="bold"), Text(str(db_path)))
                     t.add_row(
@@ -1628,7 +2334,7 @@ def chat(
                     t.add_row(Text("Files", style="bold"), Text(", ".join(sorted(last_files.keys())) or "(none)"))
                     console.print(Panel(t, title="/memory", border_style="cyan", box=box.ROUNDED))
                 else:
-                    t = Table.grid(padding=(0, 2))
+                    t = _Table.grid(padding=(0, 2))
                     t.add_row(Text("User turns", style="bold"), Text(str(user_turns)))
                     t.add_row(Text("Agent turns", style="bold"), Text(str(ai_turns)))
                     t.add_row(Text("Messages (current buffer)", style="bold"), Text(str(len(msgs))))
@@ -1646,8 +2352,7 @@ def chat(
             pending_output_panel: Optional[Panel] = None
             react_history_update: Optional[Tuple[HumanMessage, AIMessage]] = None
 
-            deep_verbose = (mode == "deep" and verbose)
-            deep_config: Dict[str, Any] = {}
+            # --------- Phase 1: choose/build agent (with quick spinner) ----------
             agent = static_agent
             model_info = None
             chosen_llm = None
@@ -1689,61 +2394,38 @@ def chat(
                             )
                         _agent_cache_put(cache_key, agent)
 
-                if mode == "deep":
-                    msgs.append({"role": "user", "content": coerced})
-                    if auto:
-                        msgs.append({
-                            "role": "system",
-                            "content": (
-                                "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
-                                "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
-                                "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
-                            )
-                        })
-                    deep_config = {
-                        "recursion_limit": prio_limits.get(priority, 45),
-                        "configurable": {"thread_id": deep_thread_id},
-                    }
+            if pending_router_panel:
+                console.print(pending_router_panel)
 
-                    if not deep_verbose:
-                        output: str = ""
-                        try:
-                            res = agent.invoke({"messages": msgs}, config=deep_config)
-                            if isinstance(res, dict) and "messages" in res:
-                                msgs = res["messages"]
-                                last_todos = res.get("todos") or last_todos
-                                last_files = res.get("files") or last_files
-                            else:
-                                output = "Error: Invalid response format from agent."
-                        except Exception as e:
-                            output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
-                                      if "recursion" in str(e).lower()
-                                      else f"Agent error: {e}")
+            def _current_model_label() -> Optional[str]: 
+                if router: 
+                    if model_info and model_info.get("langchain_model_name"): 
+                        return model_info["langchain_model_name"] 
+                    return None 
+                env_override = os.getenv("LANGCODE_MODEL_OVERRIDE") 
+                if env_override: 
+                    return env_override 
+                try: 
+                    return get_model_info(provider).get("langchain_model_name") 
+                except Exception: 
+                    return None 
+            _model_label = _current_model_label()
 
-                        if not output:
-                            last_content = _extract_last_content(msgs).strip()
-                            if not last_content:
-                                msgs.append({
-                                    "role": "system",
-                                    "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
-                                })
-                                try:
-                                    res = agent.invoke({"messages": msgs}, config=deep_config)
-                                    if isinstance(res, dict) and "messages" in res:
-                                        msgs = res["messages"]
-                                        last_todos = res.get("todos") or last_todos
-                                        last_files = res.get("files") or last_files
-                                    last_content = _extract_last_content(msgs).strip()
-                                except Exception as e:
-                                    last_content = f"Agent failed after retry: {e}"
-                            output = last_content or "No response generated."
-                        pending_output_panel = _panel_agent_output(output)
-                        ai_turns += 1
 
-                else:
+
+
+
+            if mode == "react":
+                with _show_loader():
                     try:
-                        res = agent.invoke({"input": coerced, "chat_history": history})
+                        payload = {"input": coerced, "chat_history": history}
+
+                        if provider == "anthropic":
+                            payload["chat_history"] = _normalize_chat_history_for_anthropic(payload["chat_history"])
+                        res = agent.invoke(payload)
                         output = res.get("output", "") if isinstance(res, dict) else str(res)
+                        if provider == "anthropic":
+                            output = _to_text(output)
                         if not output.strip():
                             steps = res.get("intermediate_steps") if isinstance(res, dict) else None
                             if steps:
@@ -1757,31 +2439,95 @@ def chat(
                             else:
                                 output = "No response generated. Try rephrasing your request."
                     except Exception as e:
-                        output = f"ReAct agent error: {e}"
+                        output = _friendly_agent_error(e)
+                pending_output_panel = _panel_agent_output(output, model_label=_model_label)
+                react_history_update = (HumanMessage(content=coerced), AIMessage(content=output))
 
-                    pending_output_panel = _panel_agent_output(output)
-                    react_history_update = (HumanMessage(content=coerced), AIMessage(content=output))
+            else:
+                # Deep mode UX: 1 live TODO table, then final answer. No other logs.
+                msgs.append({"role": "user", "content": coerced})
+                if auto:
+                    msgs.append({
+                        "role": "system",
+                        "content": (
+                            "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
+                            "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
+                            "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
+                        )
+                    })
 
-            if pending_router_panel:
-                console.print(pending_router_panel)
+                deep_config: Dict[str, Any] = {
+                    "recursion_limit": prio_limits.get(priority, 100),
+                    "configurable": {"thread_id": deep_thread_id},
+                }
 
-            if mode == "deep" and deep_verbose:
-                try:
-                    deep_config = dict(deep_config)
-                    deep_config["callbacks"] = [_RichDeepLogs(console)]
-                    res = agent.invoke({"messages": msgs}, config=deep_config)
-                    if isinstance(res, dict) and "messages" in res:
-                        msgs = res["messages"]
-                        last_todos = res.get("todos") or last_todos
-                        last_files = res.get("files") or last_files
-                        output = _extract_last_content(msgs).strip() or "No response generated."
+                placeholder = Panel(
+                    Text("Planning tasks…", style="dim"),
+                    title="TODOs",
+                    border_style="blue",
+                    box=box.ROUNDED,
+                    padding=(1, 1),
+                    expand=True
+                )
+
+                output: str = ""
+
+                with Live(placeholder, refresh_per_second=8, transient=True) as live:
+                    todo_cb = _TodoLiveMinimal(live)
+                    deep_config["callbacks"] = [todo_cb]  
+                    res = {}
+                    try:
+                        res = agent.invoke({"messages": msgs}, config=deep_config)
+                        if isinstance(res, dict) and "messages" in res:
+                            msgs = res["messages"]
+                            last_files = res.get("files") or last_files
+                            last_content = _extract_last_content(msgs).strip()
+                        else:
+                            last_content = ""
+                            res = res if isinstance(res, dict) else {}
+
+                    except Exception as e:
+                        last_content = ""
+                        output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
+                                  if "recursion" in str(e).lower()
+                                  else f"Agent error: {e}")
+                        res = {}
+                    if not output:
+                        if not last_content:
+                            # one safety retry to force a response
+                            msgs.append({
+                                "role": "system",
+                                "content": "You must provide a response. Use your tools to complete the request and give a clear answer."
+                            })
+                            try:
+                                res2 = agent.invoke({"messages": msgs}, config=deep_config)
+                                if isinstance(res2, dict) and "messages" in res2:
+                                    msgs = res2["messages"]
+                                last_content = _extract_last_content(msgs).strip()
+                            except Exception as e:
+                                last_content = f"Agent failed after retry: {e}"
+                        output = last_content or "No response generated."
+
+                    final_todos = res.get("todos") if isinstance(res, dict) else None
+                    if not isinstance(final_todos, list) or not final_todos:
+                        final_todos = getattr(todo_cb, "todos", [])
+
+                    if final_todos: 
+                        if output and output.strip(): 
+                            final_todos = _complete_all_todos(final_todos) 
+                        live.update(_render_todos_panel(final_todos))
+                        last_todos = final_todos
                     else:
-                        output = "Error: Invalid response format from agent."
-                except Exception as e:
-                    output = (f"Agent hit recursion limit. Last response: {_extract_last_content(msgs)}"
-                              if "recursion" in str(e).lower()
-                              else f"Agent error: {e}")
-                pending_output_panel = _panel_agent_output(output)
+                        live.update(Panel(
+                            Text("No tasks were emitted by the agent.", style="dim"),
+                            title="TODOs",
+                            border_style="blue",
+                            box=box.ROUNDED,
+                            padding=(1, 1),
+                            expand=True
+                        ))
+
+                pending_output_panel = _panel_agent_output(output, model_label=_model_label)
                 ai_turns += 1
 
             if pending_output_panel:
@@ -1832,6 +2578,7 @@ def feature(
         test_cmd=test_cmd,
         model_info=(model_info if (router and verbose) else None),
         router_enabled=router,
+        
     )
     if router and verbose and model_info:
         console.print(_panel_router_choice(model_info))
@@ -1870,7 +2617,9 @@ def fix(
     router: bool = typer.Option(False, "--router", help="Auto-route to the most efficient LLM for this request."),
     priority: str = typer.Option("balanced", "--priority", help="balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panel."),
-):
+    from_tty: bool = typer.Option(False, "--from-tty", help="Use most recent output from the current logged terminal session (run your command via `langcode wrap ...` or `langcode shell`)."),
+    tty_id: Optional[str] = typer.Option(None, "--tty-id", help="Which session to read; defaults to current TTY."),
+ ):
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
     priority = (priority or "balanced").lower()
@@ -1879,9 +2628,20 @@ def fix(
 
     provider = _resolve_provider(llm, router)
 
-    bug_input = (request or "").strip()
-    if log:
-        bug_input += "\n\n--- ERROR LOG ---\n" + Path(log).read_text(encoding="utf-8")
+    bug_input = (request or "").strip() 
+    if log: 
+        bug_input += "\n\n--- ERROR LOG ---\n" + Path(log).read_text(encoding="utf-8", errors="ignore") 
+    elif from_tty: 
+        tlog = os.environ.get("LANGCODE_TTY_LOG") or str(_tty_log_path(tty_id)) 
+        p = Path(tlog) 
+        if p.exists(): 
+            recent = _tail_bytes(p) 
+            block = _extract_error_block(recent).strip() 
+            if block: 
+                bug_input += "\n\n--- ERROR LOG (from TTY) ---\n" + block 
+                console.print(Panel.fit(Text(f"Using error from session log: {p}", style="dim"), border_style="cyan")) 
+        else: 
+            console.print(Panel.fit(Text("No TTY session log found. Run your failing command via `langcode wrap <cmd>` or `langcode shell`.", style="yellow"), border_style="yellow"))
     bug_input = bug_input.strip() or "Fix the bug using the provided log."
 
     model_info = None
@@ -1996,6 +2756,25 @@ def analyze(
             output = f"Analyze error: {e}"
     console.print(_panel_agent_output(output or "No response generated.", title="Analysis Result"))
     _pause_if_in_launcher()
+
+
+@app.command(help="Edit environment. Use --global to edit your global env (~/.config/langcode/.env or $LANGCODE_GLOBAL_ENV).")
+def env(
+    global_: bool = typer.Option(False, "--global", "-g", help="Edit the global env file."),
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False)
+):
+    if global_:
+        _print_session_header("LangCode • Global Environment", provider=None, project_dir=project_dir, interactive=False)
+        _edit_global_env_file()
+        _load_global_env(override_existing=True)
+        console.print(Panel.fit(Text("Global environment loaded.", style="green"), border_style="green"))
+    else:
+        _print_session_header("LangCode • Project Environment", provider=None, project_dir=project_dir, interactive=False)
+        _edit_env_file(project_dir)
+        _load_env_files(project_dir, override_existing=False)
+        console.print(Panel.fit(Text("Project environment loaded.", style="green"), border_style="green"))
+
+
 
 
 @app.command(name="instr", help="Open or create project-specific instructions (.langcode/langcode.md) in your editor.")
