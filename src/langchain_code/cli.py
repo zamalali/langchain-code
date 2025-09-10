@@ -722,9 +722,7 @@ def _open_in_terminal_editor(file_path: Path) -> bool:
         return False
 
     try:
-        # On Windows, we might need to handle the console properly
         if platform.system().lower() == "windows":
-            # Use shell=False to avoid issues with paths containing spaces
             subprocess.run(cmd + [str(file_path)], check=False)
         else:
             subprocess.run([*cmd, str(file_path)], check=False)
