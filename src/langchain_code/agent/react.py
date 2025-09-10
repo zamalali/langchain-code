@@ -20,7 +20,7 @@ from ..tools.fs_local import (
     make_write_file_tool,
 )
 from ..tools.mermaid import make_mermaid_tools
-from ..tools.shell import make_run_cmd_tool
+from ..tools.shell import make_run_cmd_tool, make_read_terminal_tool
 from ..tools.processor import make_process_multimodal_tool
 from ..tools.search import make_glob_tool, make_grep_tool
 from ..tools.script_exec import make_script_exec_tool
@@ -121,6 +121,7 @@ def build_react_agent(
         make_script_exec_tool(str(project_dir), apply, return_direct=False),
         make_process_multimodal_tool(str(project_dir), model),
         make_run_cmd_tool(str(project_dir), apply, test_cmd),
+        make_read_terminal_tool()
     ]
 
     tool_list.extend(mcp_tools)
@@ -138,7 +139,7 @@ def build_react_agent(
     return AgentExecutor(
         agent=agent,
         tools=tool_list,
-        verbose=True,
+        verbose=False,
         max_iterations=20,
         max_execution_time=300,
         early_stopping_method="generate",

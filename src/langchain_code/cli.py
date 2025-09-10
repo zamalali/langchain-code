@@ -54,6 +54,25 @@ from .workflows.auto import AUTO_DEEP_INSTR
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
 import logging
+from typer.core import TyperGroup
+from click.exceptions import UsageError
+
+class _DefaultToChatGroup(TyperGroup):
+    """Route unknown subcommands to `chat --inline ...` so `langcode "Hi"` works."""
+    def resolve_command(self, ctx, args):
+        if args and not args[0].startswith("-"):
+            try:
+                return super().resolve_command(ctx, args)
+            except UsageError:
+                chat_cmd = self.get_command(ctx, "chat")
+                if chat_cmd is None:
+                    raise
+                if "--inline" not in args:
+                    args = ["--inline", *args]
+                return chat_cmd.name, chat_cmd, args
+        return super().resolve_command(ctx, args)
+
+
 
 for _name in (
     "langchain_google_genai",
@@ -109,6 +128,7 @@ NEW:
 """
 
 app = typer.Typer( 
+    cls=_DefaultToChatGroup,  
     add_completion=False, 
     help=APP_HELP.strip(), 
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}, 
@@ -441,7 +461,7 @@ def _friendly_agent_error(e: BaseException) -> str:
     )
 
 
-def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = True) -> None:
+def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = True, announce: bool = False) -> None:
     """
     Load env from project_dir; if none exists, automatically fall back to the global env.
     Never prompt to create a project .env.
@@ -450,7 +470,6 @@ def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = T
     if info["files_found"]:
         return
 
-    # Ensure a global .env exists, then load it (silent fallback).
     gpath = _ensure_global_env_file()
     g = _load_global_env(override_existing=False)
 
@@ -459,15 +478,16 @@ def _bootstrap_env(project_dir: Path, *, interactive_prompt_if_missing: bool = T
     except Exception:
         kcount = len(g.get("applied_keys") or [])
 
-    console.print(Panel.fit(
-        Text.from_markup(
-            f"Using [bold]global .env[/bold] at [bold]{g['path']}[/bold] "
-            f"([green]{kcount} keys[/green])."
-        ),
-        title="Environment",
-        border_style="green",
-        box=box.ROUNDED,
-    ))
+    if announce:  
+        console.print(Panel.fit(
+            Text.from_markup(
+                f"Using [bold]global .env[/bold] at [bold]{g['path']}[/bold] "
+                f"([green]{kcount} keys[/green])."
+            ),
+            title="Environment",
+            border_style="green",
+            box=box.ROUNDED,
+        ))
 
 def _agent_cache_get(key: Tuple[str, str, str, str, bool]):
     if key in _AGENT_CACHE:
@@ -2112,28 +2132,34 @@ def _quick_route_free_text(free_text: str, project_dir: Path) -> Optional[str]:
             verbose=False, 
         ) 
         return None 
-    # default: chat 
+
     return chat( 
         message=[free_text], 
         project_dir=project_dir, 
         mode="react", 
         router=False, 
         verbose=False, 
+        inline = True
     ) 
  
-@app.callback(invoke_without_command=True) 
-def _root( 
-    ctx: typer.Context, 
-    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False), 
-): 
-    if ctx.invoked_subcommand is not None: 
-        return 
-    # If the user passed free-text (e.g., `langcode fix this`) → quick mode 
-    extras = [a for a in ctx.args if not a.startswith("-")] 
-    if extras: 
-        return _quick_route_free_text(" ".join(extras), project_dir) 
-    # Otherwise open the launcher as before 
-    _selection_hub() 
+@app.callback(invoke_without_command=True)
+def _root(
+    ctx: typer.Context,
+    project_dir: Path = typer.Option(Path.cwd(), "--project-dir", exists=True, file_okay=False),
+):
+    if ctx.invoked_subcommand is not None:
+        return
+    extras = [a for a in ctx.args if not a.startswith("-")]
+    if extras:
+        return chat(
+            message=extras,
+            project_dir=project_dir,
+            mode="react",
+            router=False,
+            verbose=False,
+            inline=True,  
+        )
+    _selection_hub()
     raise typer.Exit()
 
 @app.command(help="Open an interactive chat with the agent. Modes: react | deep (default: react). Use --auto in deep mode for full autopilot (plan+act with no questions).")
@@ -2146,6 +2172,7 @@ def chat(
     router: bool = typer.Option(False, "--router", help="Auto-route to the most efficient LLM per query."),
     priority: str = typer.Option("balanced", "--priority", help="Router priority: balanced | cost | speed | quality"),
     verbose: bool = typer.Option(False, "--verbose", help="Show model selection panels (and deep logs)."),
+    inline: bool = typer.Option(False, "--inline", help="Inline single-turn output (no banners/clear)."),
 ) -> Optional[str]:
     """
     Returns:
@@ -2153,7 +2180,7 @@ def chat(
       - "select": user requested to return to launcher
       - None: normal return (caller may continue)
     """
-    from rich.live import Live  # local import so you don't have to change global imports
+    from rich.live import Live 
 
     _bootstrap_env(project_dir, interactive_prompt_if_missing=True)
 
@@ -2166,18 +2193,92 @@ def chat(
     if mode not in {"react", "deep"}:
         mode = "react"
 
+    input_queue: List[str] = []
+    if isinstance(message, list):
+        first_msg = " ".join(message).strip()
+        if first_msg:
+            input_queue.append(first_msg)
+
+    if inline and input_queue:
+        first = input_queue.pop(0)
+        coerced = _maybe_coerce_img_command(first)
+        use_loader = not (mode == "react" and verbose)
+        cm = _show_loader() if use_loader else nullcontext()
+        with cm:
+            model_info = None
+            chosen_llm = None
+            if router:
+                model_info = get_model_info(provider, coerced, priority)
+                chosen_llm = get_model(provider, coerced, priority)
+                model_key = model_info.get("langchain_model_name") if model_info else "default"
+            else:
+                env_override = os.getenv("LANGCODE_MODEL_OVERRIDE")
+                chosen_llm = get_model_by_name(provider, env_override) if env_override else get_model(provider)
+                model_key = env_override or "default"
+
+            cache_key = (
+                "deep" if mode == "deep" else "react",
+                provider,
+                model_key,
+                str(project_dir.resolve()),
+                bool(auto) if mode == "deep" else False,
+            )
+            agent = _agent_cache_get(cache_key)
+            if agent is None:
+                if mode == "deep":
+                    seed = AUTO_DEEP_INSTR if auto else None
+                    agent = _build_deep_agent_with_optional_llm(
+                        provider=provider, project_dir=project_dir, llm=chosen_llm, instruction_seed=seed, apply=auto
+                    )
+                else:
+                    agent = _build_react_agent_with_optional_llm(
+                        provider=provider, project_dir=project_dir, llm=chosen_llm
+                    )
+                _agent_cache_put(cache_key, agent)
+            try:
+                if mode == "deep":
+                    res = agent.invoke(
+                        {"messages": [{"role": "user", "content": coerced}]},
+                        config={
+                            "recursion_limit": 30 if priority in {"speed", "cost"} else 45,
+                            "configurable": {"thread_id": _thread_id_for(project_dir, "chat-inline")},
+                        },
+                    )
+                    output = (
+                        _extract_last_content(res.get("messages", [])).strip()
+                        if isinstance(res, dict) and "messages" in res
+                        else str(res)
+                    )
+                else:
+                    payload = {"input": coerced, "chat_history": []}
+                    if provider == "anthropic":
+                        payload["chat_history"] = _normalize_chat_history_for_anthropic([])
+                    if verbose:
+                        res = agent.invoke(payload, config={"callbacks": [_RichDeepLogs(console)]})
+                    else:
+                        res = agent.invoke(payload)
+
+                    output = res.get("output", "") if isinstance(res, dict) else str(res)
+                    if provider == "anthropic":
+                        output = _to_text(output)
+                output = (output or "").strip() or "No response generated."
+            except Exception as e:
+                output = _friendly_agent_error(e)
+        console.print(output)
+        return None
+
     session_title = "LangChain Code Agent • Deep Chat" if mode == "deep" else "LangChain Code Agent • Chat"
     if mode == "deep" and auto:
         session_title += " (Auto)"
-    _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router, deep_mode=(mode == "deep"), command_name="chat")
-
-    input_queue: List[str] = [] 
- 
-    if isinstance(message, list): 
-        first_msg = " ".join(message).strip() 
-        if first_msg: 
-            input_queue.append(first_msg)
-
+    _print_session_header(
+        session_title,
+        provider,
+        project_dir,
+        interactive=True,
+        router_enabled=router,
+        deep_mode=(mode == "deep"),
+        command_name="chat",
+    )
 
     history: list = []
     msgs: list = []
@@ -2190,13 +2291,8 @@ def chat(
 
     static_agent = None
     if not router:
-        env_override = os.getenv("LANGCODE_MODEL_OVERRIDE") 
-        chosen_llm = None 
-        if env_override: 
-            chosen_llm = get_model_by_name(provider, env_override) 
-        else: 
-            chosen_llm = get_model(provider)
-
+        env_override = os.getenv("LANGCODE_MODEL_OVERRIDE")
+        chosen_llm = get_model_by_name(provider, env_override) if env_override else get_model(provider)
         if mode == "deep":
             seed = AUTO_DEEP_INSTR if auto else None
             static_agent = _build_deep_agent_with_optional_llm(
@@ -2209,7 +2305,6 @@ def chat(
 
     prio_limits = {"speed": 30, "cost": 35, "balanced": 45, "quality": 60}
 
-    # ----- live TODO callback (no logs; updates the same table) -----------------
     import re as _re, ast as _ast, json as _json
     from langchain_core.callbacks import BaseCallbackHandler
 
@@ -2267,7 +2362,6 @@ def chat(
             if t is not None:
                 self._render(t)
 
-
     try:
         while True:
             if input_queue:
@@ -2312,7 +2406,11 @@ def chat(
                 return "quit"
 
             if low in {"help", "/help", ":help"}:
-                _print_session_header(session_title, provider, project_dir, interactive=True, router_enabled=router, deep_mode=(mode == "deep"), command_name="chat")
+                _print_session_header(
+                    session_title, provider, project_dir, interactive=True,
+                    router_enabled=router, deep_mode=(mode == "deep"),
+                    command_name="chat"
+                )
                 console.print(_help_content())
                 continue
 
@@ -2352,12 +2450,12 @@ def chat(
             pending_output_panel: Optional[Panel] = None
             react_history_update: Optional[Tuple[HumanMessage, AIMessage]] = None
 
-            # --------- Phase 1: choose/build agent (with quick spinner) ----------
             agent = static_agent
             model_info = None
             chosen_llm = None
 
-            with _show_loader():
+            loader_cm = _show_loader() if (router and not verbose) else nullcontext()
+            with loader_cm:
                 if router:
                     provider = _resolve_provider(llm, router=True)
                     model_info = get_model_info(provider, coerced, priority)
@@ -2397,54 +2495,56 @@ def chat(
             if pending_router_panel:
                 console.print(pending_router_panel)
 
-            def _current_model_label() -> Optional[str]: 
-                if router: 
-                    if model_info and model_info.get("langchain_model_name"): 
-                        return model_info["langchain_model_name"] 
-                    return None 
-                env_override = os.getenv("LANGCODE_MODEL_OVERRIDE") 
-                if env_override: 
-                    return env_override 
-                try: 
-                    return get_model_info(provider).get("langchain_model_name") 
-                except Exception: 
-                    return None 
+            def _current_model_label() -> Optional[str]:
+                if router:
+                    if model_info and model_info.get("langchain_model_name"):
+                        return model_info["langchain_model_name"]
+                    return None
+                env_override = os.getenv("LANGCODE_MODEL_OVERRIDE")
+                if env_override:
+                    return env_override
+                try:
+                    return get_model_info(provider).get("langchain_model_name")
+                except Exception:
+                    return None
+
             _model_label = _current_model_label()
 
 
-
-
-
             if mode == "react":
-                with _show_loader():
-                    try:
-                        payload = {"input": coerced, "chat_history": history}
+                try:
+                    payload = {"input": coerced, "chat_history": history}
+                    if provider == "anthropic":
+                        payload["chat_history"] = _normalize_chat_history_for_anthropic(payload["chat_history"])
 
-                        if provider == "anthropic":
-                            payload["chat_history"] = _normalize_chat_history_for_anthropic(payload["chat_history"])
-                        res = agent.invoke(payload)
-                        output = res.get("output", "") if isinstance(res, dict) else str(res)
-                        if provider == "anthropic":
-                            output = _to_text(output)
-                        if not output.strip():
-                            steps = res.get("intermediate_steps") if isinstance(res, dict) else None
-                            if steps:
-                                previews = []
-                                for pair in steps[-3:]:
-                                    try:
-                                        previews.append(str(pair))
-                                    except Exception:
-                                        continue
-                                output = "Model returned empty output. Recent steps:\n" + "\n".join(previews)
-                            else:
-                                output = "No response generated. Try rephrasing your request."
-                    except Exception as e:
-                        output = _friendly_agent_error(e)
+                    if verbose:
+                        res = agent.invoke(payload, config={"callbacks": [_RichDeepLogs(console)]})
+                    else:
+                        with _show_loader():
+                            res = agent.invoke(payload)
+
+                    output = res.get("output", "") if isinstance(res, dict) else str(res)
+                    if provider == "anthropic":
+                        output = _to_text(output)
+                    if not output.strip():
+                        steps = res.get("intermediate_steps") if isinstance(res, dict) else None
+                        if steps:
+                            previews = []
+                            for pair in steps[-3:]:
+                                try:
+                                    previews.append(str(pair))
+                                except Exception:
+                                    continue
+                            output = "Model returned empty output. Recent steps:\n" + "\n".join(previews)
+                        else:
+                            output = "No response generated. Try rephrasing your request."
+                except Exception as e:
+                    output = _friendly_agent_error(e)
+
                 pending_output_panel = _panel_agent_output(output, model_label=_model_label)
                 react_history_update = (HumanMessage(content=coerced), AIMessage(content=output))
-
+                ai_turns += 1
             else:
-                # Deep mode UX: 1 live TODO table, then final answer. No other logs.
                 msgs.append({"role": "user", "content": coerced})
                 if auto:
                     msgs.append({
@@ -2474,7 +2574,7 @@ def chat(
 
                 with Live(placeholder, refresh_per_second=8, transient=True) as live:
                     todo_cb = _TodoLiveMinimal(live)
-                    deep_config["callbacks"] = [todo_cb]  
+                    deep_config["callbacks"] = [todo_cb]
                     res = {}
                     try:
                         res = agent.invoke({"messages": msgs}, config=deep_config)
@@ -2512,9 +2612,9 @@ def chat(
                     if not isinstance(final_todos, list) or not final_todos:
                         final_todos = getattr(todo_cb, "todos", [])
 
-                    if final_todos: 
-                        if output and output.strip(): 
-                            final_todos = _complete_all_todos(final_todos) 
+                    if final_todos:
+                        if output and output.strip():
+                            final_todos = _complete_all_todos(final_todos)
                         live.update(_render_todos_panel(final_todos))
                         last_todos = final_todos
                     else:
@@ -2539,7 +2639,6 @@ def chat(
                 history.append(ai_msg)
                 if len(history) > 20:
                     history[:] = history[-20:]
-
     except (KeyboardInterrupt, EOFError):
         return "quit"
 
