@@ -1,31 +1,44 @@
-<div align="center" style="font-family: 'Segoe UI', Helvetica, Arial, sans-serif; margin-top: 20px;">
-  <img src="assets/logo.png" alt="LangCode Logo" width="180" style="margin-bottom: 10px;" />
-  <h1 style="margin: 0; font-size: 2.8em; font-weight: 800; color: #222; letter-spacing: -1px;">
-    LangCode
-  </h1>
-  <p style="
-    margin-top: 8px;
-    font-size: 1.4em;
-    font-weight: 600;
-    color: #6C63FF;
-    font-style: italic;
-    letter-spacing: 1px;
-    background: linear-gradient(90deg, #6C63FF, #FF6584);
+<p align="center">
+  <img src="assets/logo.png" alt="LangCode Logo" width="160" />
+</p>
+
+<h1 align="center" style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 2.8em;">
+  LangCode
+</h1>
+<p align="center">
+  <em>
+    <svg xmlns="http://www.w3.org/2000/svg" width="100%" height="40">
+      <defs>
+        <linearGradient id="grad" gradientTransform="rotate(90)">
+          <stop offset="0%" stop-color="#A8E063"/>
+          <stop offset="100%" stop-color="#56AB2F"/>
+        </linearGradient>
+      </defs>
+      <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+            style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 22px; font-weight: 600; fill: url(#grad);">
+        The only CLI you'll ever need!
+      </text>
+    </svg>
+  </em>
+</p>
+
+
+<p align="center">
+  <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%" />
+</p>
+
+<p align="left">
+  <span style="
+    background: linear-gradient(90deg, #a8e063, #56ab2f);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
-    text-shadow: 0px 2px 6px rgba(0,0,0,0.2);
-  ">
-    The only CLI you'll ever need!
-  </p>
-</div>
+    font-size: 1.0em;
+    font-weight: bold;">
+    Gemini CLI or Claude Code? Why not both—and a bit more.
+  </span>
+</p>
 
-<div align="center">
-    <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%"/>
-</div>
-
-
-LangCode is an AI-powered coding assistant designed to streamline your development workflow. Interact with your codebase, implement new features, fix bugs, and gain insights, all from a single, intuitive interface.
-
+**LangCode brings Gemini, Anthropic, OpenAI, and Ollama together with ReAct & Deep modes, fully inline, anywhere you need it.**
 ## Key Features
 
 *   **Interactive Launcher:** Start with `langcode` and configure everything through a user-friendly interface.

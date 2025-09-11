@@ -1,0 +1,14 @@
+version: "3.9"
+services:
+  app:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - .:/work
+    environment:
+      - LANGCODE_EDITOR=nano
+    user: app
+    working_dir: /work
+    entrypoint: ["langcode"]
+    command: []

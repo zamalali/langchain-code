@@ -12,7 +12,9 @@ __pycache__/
 .pytest_cache/
 .coverage
 coverage.xml
+MANIFEST.in
 .cache/
+mermaid_render.log
 *.log
 *.sqlite3
 *.db
@@ -26,5 +28,9 @@ node_modules/
 *.tmp
 *.orig
 *.lock
+.env*
+*.un~
+.langcode/
 /.ipynb_checkpoints
 test.py
+langchain_code.egg-info/

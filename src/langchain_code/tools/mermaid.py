@@ -1,0 +1,706 @@
+from __future__ import annotations
+from pathlib import Path
+from typing import Any, Optional, Iterable, Tuple
+import json
+import time
+import re
+import os
+import base64
+import zlib
+import shutil
+import tempfile
+import subprocess
+
+from langchain_core.tools import tool
+
+_MERMAID_OK = True
+try:
+    from langchain_core.runnables.graph_mermaid import (
+        draw_mermaid,
+        draw_mermaid_png,
+        MermaidDrawMethod,
+        CurveStyle,
+    )
+    try:
+        from langchain_core.runnables.graph_mermaid import NodeStyles  # type: ignore
+        _HAS_NODESTYLES = True
+    except Exception:
+        _HAS_NODESTYLES = False
+except Exception:
+    _MERMAID_OK = False
+    _HAS_NODESTYLES = False
+
+# Optional YAML support if present
+try:
+    import yaml  # type: ignore
+    _HAS_YAML = True
+except Exception:
+    _HAS_YAML = False
+
+
+def _rooted(project_dir: str, path: str) -> Path:
+    p = Path(project_dir).joinpath(path or "").resolve()
+    if not str(p).startswith(str(Path(project_dir).resolve())):
+        raise ValueError("Path escapes project_dir")
+    return p
+
+
+def _loads_json_or_yaml(val: Any, default: Any):
+    if val is None:
+        return default
+    if isinstance(val, (dict, list)):
+        return val
+    if isinstance(val, str) and val.strip():
+        s = val.strip()
+        try:
+            return json.loads(s)
+        except Exception:
+            pass
+        if _HAS_YAML:
+            try:
+                yv = yaml.safe_load(s)
+                if isinstance(yv, (dict, list)):
+                    return yv
+            except Exception:
+                pass
+    return default
+
+
+def _looks_like_mermaid(src: Any) -> Optional[str]:
+    if not isinstance(src, str):
+        return None
+    s = src.strip()
+    if re.search(r"\b(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt)\b", s):
+        m = re.search(r"```(?:mermaid)?\s*(.*?)```", s, flags=re.S | re.I)
+        return m.group(1).strip() if m else s
+    return None
+
+
+def _norm_nodes(raw: Any) -> dict[str, str] | str:
+    m = _looks_like_mermaid(raw)
+    if m is not None:
+        return m
+
+    raw = _loads_json_or_yaml(raw, {})
+    nodes: dict[str, str] = {}
+
+    if isinstance(raw, dict):
+        if all(isinstance(v, (str, int, float)) for v in raw.values()):
+            return {str(k): str(v) for k, v in raw.items()}
+        return {}
+
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                nid = str(item.get("id") or item.get("name") or item.get("key") or item.get("node") or "").strip()
+                if not nid:
+                    if len(item) == 1:
+                        k, v = next(iter(item.items()))
+                        nid = str(k)
+                        nodes[nid] = str(v)
+                        continue
+                    continue
+                label = str(item.get("label") or item.get("title") or item.get("name") or nid)
+                nodes[nid] = label
+            else:
+                nid = str(item)
+                nodes[nid] = nid
+        return nodes
+
+    return {}
+
+
+def _parse_edge_string(s: str) -> Optional[dict]:
+    s = s.strip()
+    m = re.match(r"^\s*([\w.\-:/]+)\s*[-=]{1,3}>\s*([\w.\-:/]+)\s*[:|]?\s*(.*)$", s)
+    if not m:
+        return None
+    src, tgt, lbl = m.group(1), m.group(2), m.group(3).strip()
+    data = {"label": lbl} if lbl else {}
+    return {"source": str(src), "target": str(tgt), "data": data}
+
+
+def _flatten(iterable: Iterable[Any]) -> list[Any]:
+    return [it for it in iterable]
+
+
+def _norm_edges(raw: Any) -> tuple[list[dict], dict[str, str], Optional[str]]:
+    m = _looks_like_mermaid(raw)
+    if m is not None:
+        return ([], {}, m)
+
+    raw = _loads_json_or_yaml(raw, [])
+    edges: list[dict] = []
+    inferred_nodes: dict[str, str] = {}
+
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            src = str(k)
+            if isinstance(v, (list, tuple)):
+                for item in v:
+                    if isinstance(item, dict):
+                        tgt = item.get("target") or item.get("to") or item.get("dst") or item.get("node")
+                        if not tgt:
+                            continue
+                        lbl = item.get("label")
+                        data = {"label": lbl} if lbl is not None else {}
+                        edges.append({"source": src, "target": str(tgt), "data": data})
+                        inferred_nodes[src] = src
+                        inferred_nodes[str(tgt)] = str(tgt)
+                    else:
+                        tgt = str(item)
+                        edges.append({"source": src, "target": tgt, "data": {}})
+                        inferred_nodes[src] = src
+                        inferred_nodes[tgt] = tgt
+            elif isinstance(v, str):
+                e = _parse_edge_string(f"{k}->{v}")
+                if e:
+                    edges.append(e)
+                    inferred_nodes[str(k)] = str(k)
+                    inferred_nodes[str(v)] = str(v)
+        return (edges, inferred_nodes, None)
+
+    if isinstance(raw, list):
+        for e in _flatten(raw):
+            if isinstance(e, dict):
+                src = e.get("source") or e.get("from") or e.get("src")
+                tgt = e.get("target") or e.get("to") or e.get("dst")
+                if not (src and tgt):
+                    if len(e) == 1:
+                        k, v = next(iter(e.items()))
+                        src, tgt = k, v
+                    else:
+                        continue
+                lbl = e.get("label")
+                data = e.get("data")
+                if not isinstance(data, dict):
+                    data = {"label": lbl} if lbl is not None else {}
+                src_s, tgt_s = str(src), str(tgt)
+                edges.append({"source": src_s, "target": tgt_s, "data": data})
+                inferred_nodes[src_s] = src_s
+                inferred_nodes[tgt_s] = tgt_s
+            elif isinstance(e, (list, tuple)) and len(e) >= 2:
+                src, tgt = e[0], e[1]
+                lbl = e[2] if len(e) >= 3 else None
+                src_s, tgt_s = str(src), str(tgt)
+                data = {"label": lbl} if lbl is not None else {}
+                edges.append({"source": src_s, "target": tgt_s, "data": data})
+                inferred_nodes[src_s] = src_s
+                inferred_nodes[tgt_s] = tgt_s
+            elif isinstance(e, str):
+                parsed = _parse_edge_string(e)
+                if parsed:
+                    edges.append(parsed)
+                    inferred_nodes[parsed["source"]] = parsed["source"]
+                    inferred_nodes[parsed["target"]] = parsed["target"]
+        return (edges, inferred_nodes, None)
+
+    return ([], {}, None)
+
+
+# ---------------- HTTP helpers & API renderers ----------------
+
+def _http_get(url: str, timeout: int = 30) -> Tuple[bytes, str]:
+    import urllib.request
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("User-Agent", "Mozilla/5.0 (compatible; Mermaid-Renderer/1.0)")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec
+        return resp.read(), resp.headers.get("Content-Type", "")
+
+def _http_post(url: str, data: bytes, content_type: str, timeout: int = 30) -> Tuple[bytes, str]:
+    import urllib.request
+    req = urllib.request.Request(url, data=data, headers={
+        "Content-Type": content_type,
+        "User-Agent": "Mozilla/5.0 (compatible; Mermaid-Renderer/1.0)"
+    }, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec
+        return resp.read(), resp.headers.get("Content-Type", "")
+
+def _is_png(bytes_: bytes, content_type: str) -> bool:
+    return bytes_.startswith(b"\x89PNG\r\n\x1a\n") or ("image/png" in (content_type or "").lower())
+
+def _encode_mermaid_ink(code: str) -> str:
+    """Correct encoder for mermaid.ink (raw DEFLATE + base64url, no padding)."""
+    try:
+        cleaned = code.strip().encode("utf-8")
+        compressor = zlib.compressobj(level=9, wbits=-15)
+        compressed = compressor.compress(cleaned) + compressor.flush()
+        b64 = base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
+        return f"https://mermaid.ink/img/{b64}"
+    except Exception as e:
+        raise RuntimeError(f"Failed to encode for mermaid.ink: {e}")
+
+
+def _render_png_via_mermaid_ink(diagram: str) -> Tuple[bytes, str]:
+    """Improved Mermaid.ink renderer with better error handling"""
+    try:
+        url = _encode_mermaid_ink(diagram)
+        print(f"Requesting: {url[:100]}...")  # Debug output
+        data, ctype = _http_get(url, timeout=45)
+        if _is_png(data, ctype):
+            return data, "mermaid.ink"
+        # Check if it's an error response
+        if data.startswith(b"<!DOCTYPE") or b"error" in data.lower():
+            error_text = data[:200].decode('utf-8', errors='ignore')
+            raise RuntimeError(f"Mermaid.ink returned error page: {error_text}")
+        raise RuntimeError(f"Mermaid.ink returned non-PNG (content-type={ctype!r}, size={len(data)}).")
+    except Exception as e:
+        raise RuntimeError(f"Mermaid.ink rendering failed: {e}")
+
+def _render_png_via_kroki(diagram: str) -> Tuple[bytes, str]:
+    """Improved Kroki renderer"""
+    try:
+        data, ctype = _http_post("https://kroki.io/mermaid/png",
+                                 diagram.encode("utf-8"),
+                                 "text/plain; charset=utf-8", 45)
+        if _is_png(data, ctype):
+            return data, "kroki.io(text)"
+
+        body = json.dumps({
+            "diagram_source": diagram,
+            "diagram_type": "mermaid",
+            "output_format": "png"
+        }).encode("utf-8")
+        data, ctype = _http_post("https://kroki.io/diagram",
+                                 body, "application/json; charset=utf-8", 45)
+        if _is_png(data, ctype):
+            return data, "kroki.io(json)"
+
+        raise RuntimeError(f"Kroki returned non-PNG (content-type={ctype!r}, size={len(data)}).")
+    except Exception as e:
+        raise RuntimeError(f"Kroki rendering failed: {e}")
+
+
+
+def _have_mmdc() -> Optional[tuple[str, str]]:
+    """Return ('direct'|'npx', executable_path) or None."""
+    explicit = os.getenv("MERMAID_CLI")
+    if explicit and Path(explicit).exists():
+        return ("direct", explicit)
+    which = shutil.which("mmdc")
+    if which:
+        return ("direct", which)
+    npx = shutil.which("npx")
+    if npx:
+        return ("npx", npx)
+    return None
+
+def _run_mmdc_to_png(diagram: str, out_path: Path) -> str:
+    found = _have_mmdc()
+    if not found:
+        raise FileNotFoundError(
+            "Mermaid CLI not found. Install: `npm i -g @mermaid-js/mermaid-cli` "
+            "or ensure `npx` is available (online first run)."
+        )
+    mode, exe = found
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        inp = Path(td) / "diagram.mmd"
+        inp.write_text(diagram, encoding="utf-8")
+
+        chrome = os.getenv("MERMAID_CHROMIUM_PATH") or os.getenv("PUPPETEER_EXECUTABLE_PATH")
+        puppeteer_cfg = None
+        if chrome and Path(chrome).exists():
+            puppeteer_cfg = Path(td) / "puppeteer.json"
+            puppeteer_cfg.write_text(
+                json.dumps({"executablePath": str(Path(chrome).resolve())}),
+                encoding="utf-8"
+            )
+
+        if mode == "direct":
+            cmd = [exe, "-i", str(inp), "-o", str(out_path)]
+            if puppeteer_cfg:
+                cmd += ["-p", str(puppeteer_cfg)]
+        else:
+
+            cmd = [exe, "--yes", "@mermaid-js/mermaid-cli@10.9.1",
+                   "-i", str(inp), "-o", str(out_path)]
+            if puppeteer_cfg:
+                cmd += ["-p", str(puppeteer_cfg)]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, shell=False)
+        if proc.returncode != 0:
+            raise RuntimeError(f"mmdc failed (code={proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}")
+
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("mmdc reported success but PNG not found or empty.")
+    return f"Saved Mermaid PNG to {out_path} ({out_path.stat().st_size} bytes) via mmdc."
+
+
+def _validate_mermaid_syntax(diagram: str) -> str:
+    """Validate and clean Mermaid syntax"""
+    lines = [line.strip() for line in diagram.split('\n') if line.strip()]
+    
+    # Basic validation - ensure it starts with a valid diagram type
+    if not lines:
+        raise ValueError("Empty diagram")
+        
+    first_line = lines[0].lower()
+    valid_starts = ['graph', 'flowchart', 'sequencediagram', 'classdiagram', 'statediagram', 'erdiagram', 'gantt']
+    
+    if not any(first_line.startswith(start) for start in valid_starts):
+        # If it doesn't start with a valid diagram type, assume it's a flowchart
+        lines.insert(0, "flowchart TD")
+    
+    return '\n'.join(lines)
+
+
+def make_mermaid_tools(project_dir: str):
+    @tool("mermaid_draw", return_direct=False)
+    def mermaid_draw(
+        nodes: Any,
+        edges: Any,
+        first_node: Optional[str] = None,
+        last_node: Optional[str] = None,
+        with_styles: bool = True,
+        curve_style: str = "LINEAR",
+        node_styles: Any = None,
+        wrap_label_n_words: int = 9,
+        frontmatter_config: Any = None,
+        fenced: bool = True,
+    ) -> str:
+        """
+        MERMAID GENERATOR — CONTRACT FOR THE AGENT
+
+        Purpose
+        -------
+        Turn a simple graph spec (JSON/YAML or raw Mermaid) into valid Mermaid text that is ready to render.
+
+        When to use
+        -----------
+        - You need Mermaid code from nodes/edges data.
+        - You need to normalize raw Mermaid written by the agent or the user.
+        - You want to insert start/end nodes, styles, curve style, or frontmatter.
+
+        Inputs accepted
+        ---------------
+        - Raw Mermaid text starting with one of:
+        graph, flowchart, sequenceDiagram, classDiagram, stateDiagram, erDiagram, gantt
+        - Nodes as dict/list, e.g.:
+        {"A": "Start", "B": "End"}  or  [{"id": "A", "label": "Start"}]
+        - Edges as list/dict, e.g.:
+        [{"source": "A", "target": "B"}]  or  {"A": ["B", "C"]}
+
+        Output
+        ------
+        - By default, a fenced Mermaid block:
+            ```mermaid
+            flowchart TD
+            A[Start] --> B[End]
+            ```
+        - Use `fenced=False` for the raw Mermaid body.
+
+        HARD RULES (must follow)
+        ------------------------
+        1) No multi-line labels (inside [], {}, ()). If you need a visible break, use <br/>.
+        GOOD: K[ReAct Agent<br/>(FEATURE_INSTR)]
+        BAD : K[ReAct Agent
+                (FEATURE_INSTR)]
+
+        2) No aggregated sources. Expand A & B --> C into separate edges.
+        GOOD: A --> C   and   B --> C
+        BAD : A & B --> C
+
+        3) Edge labels use either (no quotes):
+        GOOD: A -- label --> B
+                A -->|label| B
+        BAD : A --> "label" --> B
+
+        4) Keep labels readable text (letters/digits/space/?/_/-/.//). Avoid codey/punctuation-heavy labels.
+
+        5) Always start with a valid header/orientation if missing (e.g., flowchart TD or graph LR).
+
+        6) Decision nodes use {...}, processes use [...], rounded (…), stadium ([…]).
+
+        Recommended mini-workflow
+        -------------------------
+        1) If given raw Mermaid, re-emit it but ensure it starts with a valid header.
+        2) If given nodes/edges data, generate:
+        - a header (e.g., flowchart TD),
+        - one node per id with a single-line label,
+        - one edge per relation (no & aggregation).
+        3) Double-check rules 1–3 before returning.
+
+        Examples (GOOD)
+        ---------------
+        flowchart TD
+        A[CLI Entrypoint] --> B{Command Selection?}
+        B -- chat --> C[Chat Mode]
+        B -- feature --> D[Feature Mode]
+        B -- fix --> E[Fix Mode]
+        B -- analyze --> F[Analyze Mode]
+        B -- instr --> G[Edit Instructions]
+        C --> H{Mode?<br/>react/deep}
+        H -- react --> I[ReAct Agent]
+        H -- deep --> J[Deep Agent]
+        D --> K[ReAct Agent<br/>(FEATURE_INSTR)]
+        E --> L[ReAct Agent<br/>(BUGFIX_INSTR)]
+        F --> M[Deep Agent]
+        I --> N{Tool Selection}
+        J --> N
+        K --> N
+        L --> N
+        M --> N
+        N --> O[fs_local tools]
+        N --> P[mermaid tools]
+        N --> Q[shell tool]
+        N --> R[processor tool]
+        N --> S[search tools]
+        N --> T[script_exec tool]
+        N --> U[MCP tools]
+        N --> V{TavilySearch?}
+        V -- Yes --> W[TavilySearch tool]
+        Z{LLM Provider} --> AA[get_model]
+        AA --> AB((LLM))
+
+        Examples (BAD — do NOT produce)
+        -------------------------------
+        - Multi-line labels:
+        D --> K[ReAct Agent
+        (FEATURE_INSTR)]
+        - Aggregated sources:
+        I & J & K & L & M --> N
+        - Quoted edge labels:
+        A --> "yes" --> B
+        """
+
+        if not _MERMAID_OK:
+            return (
+                "Mermaid support unavailable. "
+                "Please upgrade `langchain-core` to a version that includes `graph_mermaid`."
+            )
+
+
+        if isinstance(node_styles, (str, dict, list, tuple)):
+            node_styles = None
+
+        mermaid_nodes = _looks_like_mermaid(nodes)
+        mermaid_edges = _looks_like_mermaid(edges)
+        if mermaid_nodes or mermaid_edges:
+            syntax = mermaid_nodes or mermaid_edges or ""
+            validated = _validate_mermaid_syntax(syntax)
+            return f"```mermaid\n{validated}\n```" if fenced else validated
+
+        try:
+            nodes_obj_or_str = _norm_nodes(nodes)
+            if isinstance(nodes_obj_or_str, str):
+                syntax = nodes_obj_or_str
+                validated = _validate_mermaid_syntax(syntax)
+                return f"```mermaid\n{validated}\n```" if fenced else validated
+            nodes_obj: dict[str, str] = nodes_obj_or_str
+
+            edges_list, inferred_from_edges, mermaid_from_edges = _norm_edges(edges)
+            if mermaid_from_edges:
+                validated = _validate_mermaid_syntax(mermaid_from_edges)
+                return f"```mermaid\n{validated}\n```" if fenced else validated
+
+            for nid in inferred_from_edges.keys():
+                nodes_obj.setdefault(nid, nid)
+
+            if first_node and first_node not in nodes_obj:
+                nodes_obj[str(first_node)] = str(first_node)
+            if last_node and last_node not in nodes_obj:
+                nodes_obj[str(last_node)] = str(last_node)
+
+            # Only frontmatter supports JSON/YAML. Node styles must be a real NodeStyles object.
+            fm_obj = _loads_json_or_yaml(frontmatter_config, None)
+
+            try:
+                cs = CurveStyle[curve_style.upper().strip()]
+            except Exception:
+                cs = CurveStyle.LINEAR
+
+            # Safely determine NodeStyles instance (or None)
+            ns = None
+            if _HAS_NODESTYLES and node_styles is not None:
+                try:
+                    from langchain_core.runnables.graph_mermaid import NodeStyles as _NodeStyles  # type: ignore
+                    if isinstance(node_styles, _NodeStyles):
+                        ns = node_styles
+                except Exception:
+                    ns = None
+
+            try:
+                syntax = draw_mermaid(
+                    nodes=nodes_obj,
+                    edges=edges_list,
+                    first_node=first_node,
+                    last_node=last_node,
+                    with_styles=with_styles,
+                    curve_style=cs,
+                    node_styles=ns,  # only a proper NodeStyles or None ever gets through
+                    wrap_label_n_words=wrap_label_n_words,
+                    frontmatter_config=fm_obj,
+                )
+            except AttributeError:
+                # Some langchain-core versions may attempt `.name` on enums/styles;
+                # retry with node_styles disabled.
+                syntax = draw_mermaid(
+                    nodes=nodes_obj,
+                    edges=edges_list,
+                    first_node=first_node,
+                    last_node=last_node,
+                    with_styles=with_styles,
+                    curve_style=cs,
+                    node_styles=None,
+                    wrap_label_n_words=wrap_label_n_words,
+                    frontmatter_config=fm_obj,
+                )
+            except TypeError:
+                # Older signatures without node_styles parameter.
+                syntax = draw_mermaid(
+                    nodes=nodes_obj,
+                    edges=edges_list,
+                    first_node=first_node,
+                    last_node=last_node,
+                    with_styles=with_styles,
+                    curve_style=cs,
+                    node_styles=None,
+                    wrap_label_n_words=wrap_label_n_words,
+                    frontmatter_config=fm_obj,
+                )
+
+            validated = _validate_mermaid_syntax(syntax)
+            return f"```mermaid\n{validated}\n```" if fenced else validated
+
+        except Exception as e:
+            return f"Error generating Mermaid: {type(e).__name__}: {e}"
+
+    @tool("mermaid_png", return_direct=False)
+    def mermaid_png(
+        mermaid_syntax: str,
+        output_file_path: Optional[str] = None,
+        draw_method: str = "AUTO",   # AUTO | API | LOCAL (kept for backward compat)
+        background_color: Optional[str] = "white",
+        padding: int = 10,
+        max_retries: int = 2,  # Increased retries
+        retry_delay: float = 1.0,
+    ) -> str:
+        """
+        MERMAID PNG RENDERER — CONTRACT FOR THE AGENT
+
+        Purpose
+        -------
+        Render **already valid** Mermaid text to a PNG and return the saved path.
+
+        When to use
+        -----------
+        Only after you have valid Mermaid text. If you aren’t 100% sure the text follows
+        the rules below, call `mermaid_draw` first to normalize it.
+
+        Preconditions (must be true before calling)
+        -------------------------------------------
+        1) **No multi-line labels** inside `[]`, `{}`, or `()`. Use `<br/>` if you need a line break.
+        2) **No `&` aggregation** (e.g., `A & B --> C`). Expand to separate edges.
+        3) **No quoted edge labels.** Use `A -- label --> B` or `A -->|label| B`.
+        4) Diagram starts with a valid header (e.g., `flowchart TD` or `graph LR`).
+
+        Rendering policy
+        ----------------
+        - Mode: env `MERMAID_RENDER_MODE` = local|api|auto (default auto).
+        - `draw_method` overrides per call (LOCAL/API/AUTO).
+        - Priority: LOCAL (mmdc) → Mermaid.ink (retry) → Kroki.
+
+        If rendering fails
+        ------------------
+        - Treat it as a **syntax issue** unless logs clearly say otherwise.
+        - Fix the Mermaid by calling `mermaid_draw` with the same content and re-emit following the rules.
+        - Then call `mermaid_png` again.
+
+        Examples (VALID to render)
+        --------------------------
+        ```mermaid
+        flowchart TD
+        A[Start] --> B{Choice?}
+        B -- yes --> C[Do thing]
+        B -- no --> D[Skip]
+        Examples (INVALID — fix before calling)
+
+        Has &: A & B --> C
+
+        Has multi-line label in brackets:
+        K[Title (Details)]
+
+        Has quoted edge label:
+        A --> "go" --> B
+        """
+        if not _MERMAID_OK:
+            return (
+                "Mermaid rendering unavailable. "
+                "Please upgrade `langchain-core` to include `graph_mermaid`."
+            )
+
+        body = mermaid_syntax or ""
+        m = re.search(r"```(?:mermaid)?\s*(.*?)```", body, flags=re.S | re.I)
+        if m:
+            body = m.group(1).strip()
+        if not body.strip():
+            return "Error rendering Mermaid PNG: empty mermaid_syntax."
+
+        # Validate the mermaid syntax
+        try:
+            body = _validate_mermaid_syntax(body)
+            print(f"Validated Mermaid syntax:\n{body}")
+        except ValueError as e:
+            return f"Error: Invalid Mermaid syntax: {e}"
+
+        # Ensure .png filename
+        rel = output_file_path or f"assets/mermaid_{int(time.time())}.png"
+        if not str(rel).lower().endswith(".png"):
+            rel = f"{rel}.png"
+
+        try:
+            out_path = _rooted(project_dir, str(rel))
+        except Exception as e:
+            return f"Invalid output path: {e}"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Decide mode
+        env_mode = (os.getenv("MERMAID_RENDER_MODE") or "AUTO").strip().upper()
+        call_mode = (draw_method or "AUTO").strip().upper()
+        mode = call_mode if call_mode in {"LOCAL", "API", "AUTO"} else env_mode
+        if mode not in {"LOCAL", "API", "AUTO"}:
+            mode = "AUTO"
+
+        # Helper to try saving bytes
+        def _save_and_report(png: bytes, source: str) -> str:
+            out_path.write_bytes(png)
+            return f"Saved Mermaid PNG to {out_path.relative_to(Path(project_dir))} ({len(png)} bytes) via {source}."
+
+        last_error = None
+        
+        # Try LOCAL first (AUTO path prefers local for offline reliability)
+        if mode in {"LOCAL", "AUTO"}:
+            try:
+                return _run_mmdc_to_png(body, out_path)
+            except Exception as e_local:
+                last_error = f"Local: {e_local}"
+                print(f"Local rendering failed: {e_local}")
+                if mode == "LOCAL":
+                    return f"Error rendering Mermaid PNG locally: {type(e_local).__name__}: {e_local}"
+
+        # Try API(s) with retries
+        for attempt in range(max_retries):
+            try:
+                print(f"Trying Mermaid.ink (attempt {attempt + 1}/{max_retries})")
+                png, source = _render_png_via_mermaid_ink(body)
+                return _save_and_report(png, source)
+            except Exception as e_mermaid:
+                last_error = f"Mermaid.ink: {e_mermaid}"
+                print(f"Mermaid.ink failed: {e_mermaid}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+
+        # Try Kroki as final fallback
+        try:
+            print("Trying Kroki as final fallback...")
+            png, source = _render_png_via_kroki(body)
+            return _save_and_report(png, source)
+        except Exception as e_kroki:
+            last_error = f"Kroki: {e_kroki}"
+            print(f"Kroki failed: {e_kroki}")
+
+        return f"Error rendering Mermaid PNG: All methods failed. Last errors: {last_error}"
+
+    return [mermaid_draw, mermaid_png]
