@@ -22,10 +22,8 @@
   </em>
 </p>
 
+![LangCode Demo](assets/demo.gif)
 
-<p align="center">
-  <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%" />
-</p>
 
 <p align="left">
   <span style="
@@ -55,6 +53,9 @@
     ```bash
     pip install langchain-code
     ```
+<p align="center">
+  <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%" />
+</p>
 
 2.  **Launch the Interactive Launcher:**
     Just type `langcode` in your terminal and hit Enter. This opens a user-friendly interactive menu where you can easily configure your session and access various functionalities without needing to remember specific command-line arguments. See the image shown above.
