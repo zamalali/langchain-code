@@ -1,0 +1,9 @@
+# MANIFEST.in
+include README.md
+include LICENSE
+
+# Include JSON configs
+recursive-include src/langchain_code/config *.json
+
+# Include all images in assets
+recursive-include assets *.png *.jpg *.svg *.gif
