@@ -1,18 +1,44 @@
 <p align="center">
-  <img src="assets/logo.png" alt="LangCode Logo" width="180" />
+  <img src="assets/logo.png" alt="LangCode Logo" width="160" />
 </p>
 
-<h1 align="center">LangCode</h1>
+<h1 align="center" style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-weight: 700; font-size: 2.8em;">
+  LangCode
+</h1>
 <p align="center">
-  <em><font size="4">The only CLI you'll ever need!</font></em>
+  <em>
+    <svg xmlns="http://www.w3.org/2000/svg" width="100%" height="40">
+      <defs>
+        <linearGradient id="grad" gradientTransform="rotate(90)">
+          <stop offset="0%" stop-color="#A8E063"/>
+          <stop offset="100%" stop-color="#56AB2F"/>
+        </linearGradient>
+      </defs>
+      <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+            style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 22px; font-weight: 600; fill: url(#grad);">
+        The only CLI you'll ever need!
+      </text>
+    </svg>
+  </em>
 </p>
+
 
 <p align="center">
   <img src="assets/cmd.png" alt="LangCode Home Screen" width="100%" />
 </p>
 
-LangCode is an AI-powered coding assistant designed to streamline your development workflow. Interact with your codebase, implement new features, fix bugs, and gain insights, all from a single, intuitive interface.
+<p align="left">
+  <span style="
+    background: linear-gradient(90deg, #a8e063, #56ab2f);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-size: 1.0em;
+    font-weight: bold;">
+    Gemini CLI or Claude Code? Why not both—and a bit more.
+  </span>
+</p>
 
+**LangCode brings Gemini, Anthropic, OpenAI, and Ollama together with ReAct & Deep modes, fully inline, anywhere you need it.**
 ## Key Features
 
 *   **Interactive Launcher:** Start with `langcode` and configure everything through a user-friendly interface.
