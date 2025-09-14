@@ -320,11 +320,6 @@ Patch from stack trace:
 langcode fix --log crash.log --test-cmd "npm test"
 ```
 
-Multi‑step change:
-
-```bash
-deepagent "Introduce feature flags with config, implement two flags, add tests"
-```
 
 ## Troubleshooting & Debugging
 
