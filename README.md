@@ -350,7 +350,7 @@ Issues and PRs are welcome. Please open an issue to discuss substantial changes 
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Apache 2.0 See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
