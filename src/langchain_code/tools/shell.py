@@ -95,9 +95,124 @@ def make_read_terminal_tool():
 
         else:
             try:
-                return os.popen("clear && tput cup 0 0 && cat < /dev/tty").read().strip()
+                import re, shutil
+
+                def _clean(s: str) -> str:
+                    if not s:
+                        return s
+                    ansi = re.compile(r'(\x9B|\x1B\[)[0-?]*[ -/]*[@-~]')
+                    s = ansi.sub('', s).replace('\r', '')
+                    return s.strip()
+
+                if os.environ.get("TMUX") and shutil.which("tmux"):
+                    r = subprocess.run(
+                        ["tmux", "capture-pane", "-p"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=3,
+                    )
+                    out = _clean(r.stdout)
+                    if out:
+                        return out
+
+                if (os.environ.get("STY") or os.environ.get("SCREEN") or os.path.exists("/var/run/screen")) and shutil.which("screen"):
+                    tmp = "/tmp/screen_hardcopy.txt"
+                    subprocess.run(["screen", "-X", "hardcopy", tmp], timeout=3)
+                    try:
+                        with open(tmp, "r", encoding="utf-8", errors="replace") as f:
+                            out = _clean(f.read())
+                        os.remove(tmp)
+                        if out:
+                            return out
+                    except Exception:
+                        pass
+
+                history_chunks = []
+
+                bash_hist = os.path.expanduser("~/.bash_history")
+                if os.path.exists(bash_hist):
+                    try:
+                        with open(bash_hist, "r", encoding="utf-8", errors="replace") as f:
+                            lines = f.readlines()
+                        if lines:
+                            history_chunks.append("".join(lines[-50:]))
+                    except Exception:
+                        pass
+
+                zsh_hist = os.path.expanduser("~/.zsh_history")
+                if os.path.exists(zsh_hist):
+                    try:
+                        with open(zsh_hist, "r", encoding="utf-8", errors="replace") as f:
+                            lines = f.readlines()
+                        if lines:
+                            cleaned = [ln.split(";", 1)[-1] for ln in lines[-100:]]
+                            history_chunks.append("".join(cleaned[-50:]))
+                    except Exception:
+                        pass
+
+                fish_hist = os.path.expanduser("~/.local/share/fish/fish_history")
+                if not os.path.exists(fish_hist):
+                    fish_hist = os.path.expanduser("~/.config/fish/fish_history")
+                if os.path.exists(fish_hist):
+                    try:
+                        with open(fish_hist, "r", encoding="utf-8", errors="replace") as f:
+                            lines = f.readlines()
+                        cmds = [ln.strip()[6:] for ln in lines if ln.strip().startswith("- cmd: ")]
+                        if cmds:
+                            history_chunks.append("\n".join(cmds[-50:]))
+                    except Exception:
+                        pass
+
+                if history_chunks:
+                    combined = _clean("\n".join(history_chunks).strip())
+                    if combined:
+                        return "(terminal buffer capture not supported; recent history)\n" + combined
+
+                if shutil.which("bash"):
+                    r = subprocess.run(
+                        ["bash", "-ic", "history -r; history 50"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=3,
+                    )
+                    out = _clean(r.stdout)
+                    if out:
+                        return out
+
+                if shutil.which("zsh"):
+                    r = subprocess.run(
+                        ["zsh", "-ic", "fc -l -n -50"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=3,
+                    )
+                    out = _clean(r.stdout)
+                    if out:
+                        return out
+
+                if shutil.which("fish"):
+                    r = subprocess.run(
+                        ["fish", "-ic", "history | tail -n 50"],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=3,
+                    )
+                    out = _clean(r.stdout)
+                    if out:
+                        return out
+
+                return "(no recent history)"
             except Exception:
                 return "(not supported on this system)"
+
 
     @tool("read_terminal", return_direct=False)
     def read_terminal() -> str:
