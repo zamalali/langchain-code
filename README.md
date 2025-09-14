@@ -35,8 +35,13 @@
     Gemini CLI or Claude Code? Why not both—and a bit more.
   </span>
 </p>
+<strong>LangCode brings Gemini, Anthropic, OpenAI, and Ollama together with ReAct & Deep modes, fully inline, anywhere you need it.</strong>
+<br>
+<br>
 
-**LangCode brings Gemini, Anthropic, OpenAI, and Ollama together with ReAct & Deep modes, fully inline, anywhere you need it.**
+[![PyPI version](https://badge.fury.io/py/langchain-code.svg)](https://pypi.org/project/langchain-code/) [![PyPI Downloads](https://static.pepy.tech/personalized-badge/langchain-code?period=total&units=international_system&left_color=black&right_color=green&left_text=downloads)](https://pepy.tech/project/langchain-code) ![Python Versions](https://img.shields.io/pypi/pyversions/langchain-code.svg) [![License](https://img.shields.io/github/license/zamalali/langchain-code)](https://github.com/zamalali/langchain-code/blob/main/LICENSE) [![Docker Build](https://github.com/zamalali/langchain-code/actions/workflows/docker-build.yml/badge.svg)](https://github.com/zamalali/langchain-code/actions/workflows/docker-build.yml) [![Docker Pulls](https://img.shields.io/docker/pulls/at384/langchain-code)](https://hub.docker.com/r/at384/langchain-code) [![Docker Image Size](https://img.shields.io/docker/image-size/at384/langchain-code/latest)](https://hub.docker.com/r/at384/langchain-code) [![Docker Version](https://img.shields.io/docker/v/at384/langchain-code/latest)](https://hub.docker.com/r/at384/langchain-code/tags) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black) [![Imports: isort](https://img.shields.io/badge/imports-isort-ef8336.svg)](https://pycqa.github.io/isort/)
+
+
 ## Key Features
 
 *   **Interactive Launcher:** Start with `langcode` and configure everything through a user-friendly interface.
