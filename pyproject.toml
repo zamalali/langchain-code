@@ -22,7 +22,6 @@ dependencies = [
     "mcp>=0.4.2",
     "langchain-mcp-adapters>=0.1.7",
     "langchain-tavily>=0.1.0",
-    "deepagents>=0.0.3",
     "genai-processors>=1.1.0",
     "langchain-openai>=0.3.0,<0.4.0",
     "langchain-ollama>=0.3.0,<0.4.0",
