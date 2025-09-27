@@ -292,7 +292,7 @@ def _global_env_status_label() -> str:
             rel = os.path.relpath(str(p), str(Path.cwd()))
         except ValueError:
             # Handle cross-drive paths on Windows
-            rel = str(p)
+            rel = p.name
         return f"edit…  ({rel}, {k} keys)"
     return f"create…  ({_global_env_path()})"
 
