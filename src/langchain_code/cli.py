@@ -288,7 +288,11 @@ def _global_env_status_label() -> str:
             k = _count_env_keys_in_file(p)
         except Exception:
             k = 0
-        rel = os.path.relpath(str(p), str(Path.cwd()))
+        try:
+            rel = os.path.relpath(str(p), str(Path.cwd()))
+        except ValueError:
+            # Handle cross-drive paths on Windows
+            rel = p.name
         return f"edit…  ({rel}, {k} keys)"
     return f"create…  ({_global_env_path()})"
 
