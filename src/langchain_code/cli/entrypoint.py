@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import typer
+
 from .commands.chat import chat
 from .commands.flows import feature, fix, analyze
 from .commands.system import wrap, shell, doctor
@@ -156,6 +158,14 @@ app.command(help="Diagnose & fix a bug (trace → pinpoint → patch → test). 
 app.command(help="Analyze any codebase and generate insights (deep agent).")(analyze)
 app.command(help="Edit environment. Use --global to edit your global env (~/.config/langcode/.env).")(env)
 app.command(name="instr", help="Open or create project-specific instructions (.langcode/langcode.md) in your editor.")(edit_instructions)
+
+
+@app.callback(invoke_without_command=True)
+def _default_entry(ctx: typer.Context):
+    """Launch the selection hub when no explicit subcommand is provided."""
+    if ctx.invoked_subcommand:
+        return
+    selection_hub()
 
 
 def main() -> None:

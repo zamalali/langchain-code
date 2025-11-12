@@ -7,7 +7,6 @@ This package exists to keep the top-level entrypoint (`langchain_code.cli`)
 lightweight while allowing each command/session to live in its own module.
 """
 
-__all__ = [
-    "register_cli",
-]
+from .entrypoint import app, main, selection_hub
 
+__all__ = ["app", "main", "selection_hub"]

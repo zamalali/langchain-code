@@ -20,11 +20,12 @@ from ...cli_components.env import (
     bootstrap_env,
     tty_log_path,
     current_tty_id,
-    mcp_target_path,
     global_env_path,
     count_env_keys_in_file,
 )
+from ...cli_components.mcp import mcp_target_path
 from ...cli_components.launcher import list_ollama_models
+from ..constants_runtime import PROVIDER_KEY_LABELS, DOCTOR_FOOTER_TIP
 
 
 def wrap(
@@ -99,23 +100,10 @@ def doctor(
     for tool in ["git", "npx", "node", "ollama"]:
         rows.append(yes(f"{tool} found") if shutil.which(tool) else no(f"{tool} missing"))
 
-    provider_keys = {
-        "OPENAI_API_KEY": "OpenAI",
-        "ANTHROPIC_API_KEY": "Anthropic",
-        "GOOGLE_API_KEY": "Gemini",
-        "GEMINI_API_KEY": "Gemini (alt)",
-        "GROQ_API_KEY": "Groq",
-        "TOGETHER_API_KEY": "Together",
-        "FIREWORKS_API_KEY": "Fireworks",
-        "PERPLEXITY_API_KEY": "Perplexity",
-        "DEEPSEEK_API_KEY": "DeepSeek",
-        "TAVILY_API_KEY": "Tavily (web search)",
-    }
-
     provider_panel = Table.grid(padding=(0, 2))
     provider_panel.add_column("Provider")
     provider_panel.add_column("Status")
-    for env, label in provider_keys.items():
+    for env, label in PROVIDER_KEY_LABELS.items():
         ok = env in os.environ and bool(os.environ.get(env, "").strip())
         provider_panel.add_row(
             label,
@@ -150,12 +138,7 @@ def doctor(
     console.print(Panel(Align.left(Text.assemble(*[r + Text("\n") for r in rows])), title="System", border_style="cyan"))
     console.print(Panel(provider_panel, title="Providers", border_style="cyan"))
     console.print(Columns([mcp_card, oll_card, global_card]))
-    console.print(
-        Panel(
-            Text("Tip: run 'langcode instr' to set project rules; edit environment via the launcher."),
-            border_style="blue",
-        )
-    )
+    console.print(Panel(Text(DOCTOR_FOOTER_TIP), border_style="blue"))
 
 
 __all__ = ["wrap", "shell", "doctor"]

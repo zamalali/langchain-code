@@ -25,6 +25,7 @@ from ..tools.processor import make_process_multimodal_tool
 from ..tools.shell import make_run_cmd_tool
 from ..tools.script_exec import make_script_exec_tool
 from ..tools.search import make_glob_tool, make_grep_tool
+from ..static_values import BASE_DEEP_SUFFIX
 from ..workflows.base_system import BASE_SYSTEM
 
 def load_langcode_context(project_dir: Path) -> str:
@@ -41,18 +42,6 @@ try:
     from langchain_tavily import TavilySearch
 except Exception:
     TavilySearch = None
-
-BASE_DEEP_SUFFIX = """
-## Planning & TODOs
-- In your FIRST 1–2 tool calls, call `write_todos([...])` with ~3–8 concrete steps.
-- Before working a step, call `update_todo_status(index, "in_progress")`.
-- After finishing it, call `update_todo_status(index, "completed")`.
-- If you discover new work, call `append_todo("...")` and execute it.
-- Keep only one item "in_progress" at a time and keep todos verb-first and specific.
-
-## Subagents
-- Prefer 'general-purpose' for iterative research/execution.
-"""
 
 async def _load_dynamic_tools(project_dir: Path, model, apply: bool, test_cmd: Optional[str]) -> List[BaseTool]:
     tools: List[BaseTool] = [

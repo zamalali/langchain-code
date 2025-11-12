@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
@@ -43,6 +44,17 @@ from ...cli_components.env import bootstrap_env
 from ...workflows.auto import AUTO_DEEP_INSTR
 from ...config_core import get_model, get_model_info, get_model_by_name
 from ...cli_components.constants import PROMPT
+from ..constants_runtime import (
+    AUTO_CHAT_SUFFIX,
+    AUTOPILOT_PROMPT,
+    CHAT_SESSION_TITLE,
+    DEEP_CHAT_SESSION_TITLE,
+    TODO_ANIMATION_DELAY,
+    TODO_EMPTY_TEXT,
+    TODO_PANEL_TITLE,
+    TODO_PLANNING_TEXT,
+    TODO_STEP_HEADER,
+)
 
 
 _AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=2)
@@ -57,7 +69,7 @@ def _todos_to_text_summary(todos: List[dict]) -> str:
         mark = icon.get(status, "-")
         content = (item.get("content") or "").strip() or "(empty)"
         lines.append(f"{idx}. {mark} {content} [{status.replace('_', ' ')}]")
-    header = "Agent steps:"
+    header = TODO_STEP_HEADER
     return header + ("\n" + "\n".join(lines) if lines else "\n(no steps recorded)")
 
 
@@ -230,9 +242,9 @@ def chat(
         console.print(output)
         return None
 
-    session_title = "LangChain Code Agent | Deep Chat" if mode == "deep" else "LangChain Code Agent | Chat"
+    session_title = DEEP_CHAT_SESSION_TITLE if mode == "deep" else CHAT_SESSION_TITLE
     if mode == "deep" and auto:
-        session_title += " (Auto)"
+        session_title += AUTO_CHAT_SUFFIX
     print_session_header(
         session_title,
         provider,
@@ -255,8 +267,6 @@ def chat(
     static_agent = None
     static_agent_future = None
     if not router:
-        from ...cli import _AGENT_EXECUTOR  # type: ignore
-
         def _build_static_agent() -> Any:
             env_override = os.getenv("LANGCODE_MODEL_OVERRIDE")
             chosen_llm = get_model_by_name(provider, env_override) if env_override else get_model(provider)
@@ -514,16 +524,7 @@ def chat(
             else:
                 msgs.append({"role": "user", "content": coerced})
                 if auto:
-                    msgs.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                "AUTOPILOT: Start now. Discover files (glob/list_dir/grep), read targets (read_file), "
-                                "perform edits (edit_by_diff/write_file), and run at least one run_cmd (git/tests) "
-                                "capturing stdout/stderr + exit code. Then produce one 'FINAL:' report and STOP. No questions."
-                            ),
-                        }
-                    )
+                    msgs.append({"role": "system", "content": AUTOPILOT_PROMPT})
 
                 deep_config: Dict[str, Any] = {
                     "recursion_limit": prio_limits.get(priority, 100),
@@ -531,8 +532,8 @@ def chat(
                 }
 
                 placeholder = Panel(
-                    Text("Planning tasks...", style="dim"),
-                    title="TODOs",
+                    Text(TODO_PLANNING_TEXT, style="dim"),
+                    title=TODO_PANEL_TITLE,
                     border_style="blue",
                     box=box.ROUNDED,
                     padding=(1, 1),
@@ -590,8 +591,6 @@ def chat(
                         animated_final = [{**todo, "status": todo.get("status", "pending")} for todo in normalized_todos]
                         any_completed = any(todo.get("status") == "completed" for todo in animated_final)
                         if not any_completed:
-                            import time
-
                             for idx in range(len(animated_final)):
                                 step_view: List[dict] = []
                                 for j, todo in enumerate(animated_final):
@@ -602,7 +601,7 @@ def chat(
                                         status = "in_progress" if status != "completed" else status
                                     step_view.append({**todo, "status": status})
                                 live.update(render_todos_panel(step_view))
-                                time.sleep(0.15)
+                                time.sleep(TODO_ANIMATION_DELAY)
 
                         completed_view = [{**todo, "status": "completed"} for todo in normalized_todos]
 
@@ -614,8 +613,8 @@ def chat(
                     else:
                         live.update(
                             Panel(
-                                Text("No tasks were emitted by the agent.", style="dim"),
-                                title="TODOs",
+                                Text(TODO_EMPTY_TEXT, style="dim"),
+                                title=TODO_PANEL_TITLE,
                                 border_style="blue",
                                 box=box.ROUNDED,
                                 padding=(1, 1),

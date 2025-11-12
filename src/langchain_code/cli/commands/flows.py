@@ -29,6 +29,12 @@ from ...cli_components.agents import (
 from ...config_core import get_model, get_model_info
 from ...workflows.feature_impl import FEATURE_INSTR
 from ...workflows.bug_fix import BUGFIX_INSTR
+from ..constants_runtime import (
+    FEATURE_SESSION_TITLE,
+    FIX_SESSION_TITLE,
+    ANALYZE_SESSION_TITLE,
+    FIX_FALLBACK_PROMPT,
+)
 
 
 def feature(
@@ -56,7 +62,7 @@ def feature(
         chosen_llm = get_model(provider, request, priority)
 
     print_session_header(
-        "LangChain Code Agent | Feature",
+        FEATURE_SESSION_TITLE,
         provider,
         project_dir,
         interactive=False,
@@ -137,7 +143,7 @@ def fix(
                     border_style="yellow",
                 )
             )
-    bug_input = bug_input.strip() or "Fix the bug using the provided log."
+    bug_input = bug_input.strip() or FIX_FALLBACK_PROMPT
 
     model_info = None
     chosen_llm = None
@@ -146,7 +152,7 @@ def fix(
         chosen_llm = get_model(provider, bug_input, priority)
 
     print_session_header(
-        "LangChain Code Agent | Fix",
+        FIX_SESSION_TITLE,
         provider,
         project_dir,
         interactive=False,
@@ -206,7 +212,7 @@ def analyze(
         chosen_llm = get_model(provider, request, priority)
 
     print_session_header(
-        "LangChain Code Agent | Analyze",
+        ANALYZE_SESSION_TITLE,
         provider,
         project_dir,
         interactive=False,

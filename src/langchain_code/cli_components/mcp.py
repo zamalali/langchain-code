@@ -11,7 +11,7 @@ from rich.text import Text
 
 from .constants import LANGCODE_DIRNAME, MCP_FILENAME, MCP_PROJECT_REL
 from .editors import diff_stats, inline_capture_editor, open_in_terminal_editor
-from .state import console
+from .state import console, edit_feedback_enabled
 
 
 def mcp_target_path(project_dir: Path) -> Path:
@@ -89,18 +89,21 @@ def edit_mcp_json(project_dir: Path) -> None:
         edited_text = mcp_path.read_text(encoding="utf-8")
 
     if edited_text is None:
-        console.print(Panel.fit(Text("No changes saved.", style="yellow"), border_style="yellow"))
+        if edit_feedback_enabled():
+            console.print(Panel.fit(Text("No changes saved.", style="yellow"), border_style="yellow"))
         return
     if edited_text == original:
-        console.print(Panel.fit(Text("No changes saved (file unchanged).", style="yellow"), border_style="yellow"))
+        if edit_feedback_enabled():
+            console.print(Panel.fit(Text("No changes saved (file unchanged).", style="yellow"), border_style="yellow"))
         return
 
     stats = diff_stats(original, edited_text)
-    console.print(Panel.fit(
-        Text.from_markup(
-            f"Saved [bold]{mcp_path}[/bold]\n"
-            f"[green]+{stats['added']}[/green] / [red]-{stats['removed']}[/red] - total {stats['total_after']} lines"
-        ),
-        border_style="green"
-    ))
+    if edit_feedback_enabled():
+        console.print(Panel.fit(
+            Text.from_markup(
+                f"Saved [bold]{mcp_path}[/bold]\n"
+                f"[green]+{stats['added']}[/green] / [red]-{stats['removed']}[/red] - total {stats['total_after']} lines"
+            ),
+            border_style="green"
+        ))
 
