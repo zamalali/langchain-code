@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from langgraph.types import Checkpointer
 from ..config_core import get_model
 from ..mcp_loader import get_mcp_tools
+from ..static_values import RUNTIME_POLICY
 from ..tools.fs_local import (
     make_delete_file_tool,
     make_edit_by_diff_tool,
@@ -32,18 +33,6 @@ try:
     from langchain_tavily import TavilySearch  
 except Exception:  
     TavilySearch = None  
-RUNTIME_POLICY = """
-## Runtime Discipline (LangCode)
-- Explore first: `list_dir`, `glob`, `grep` to find targets. Never ask the user for paths.
-- Directory handling: if a folder is missing, just write files to that nested path (parents are auto-created).
-- Script fallback (when tools can’t express the logic cleanly):
-  1) Prefer **Python** short scripts; else bash/pwsh/node if truly needed.
-  2) Run with `script_exec(language="python", code=..., timeout_sec=60)`.
-  3) If exit != 0, read stderr/stdout, **fix the script**, and retry up to 2 times.
-  4) Keep responses factual and include the key log lines (command, exit, brief stdout/stderr).
-- Verification: after edits/scripts, re-read files or run a quick command to confirm.
-- Never spawn background daemons; keep everything inside the project root.
-""".strip()
 
 
 def _maybe_make_tavily_tool() -> Optional[BaseTool]:

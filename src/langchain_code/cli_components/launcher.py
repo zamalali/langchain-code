@@ -40,7 +40,7 @@ from .env import (
 )
 from .instructions import edit_langcode_md
 from .mcp import edit_mcp_json, mcp_status_label
-from .state import console
+from .state import console, edit_feedback
 
 
 class Key:
@@ -529,8 +529,9 @@ def launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if field == "Environment":
                 live.stop()
                 try:
-                    edit_env_file(state["project_dir"])
-                    load_env_files(state["project_dir"], override_existing=False)
+                    with edit_feedback():
+                        edit_env_file(state["project_dir"])
+                        load_env_files(state["project_dir"], override_existing=False)
                 except Exception as exc:
                     console.print(Panel.fit(Text(f"Failed to edit environment: {exc}", style="bold red"), border_style="red"))
                     console.input("Press Enter to continue...")
@@ -540,8 +541,9 @@ def launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if field == "Global Environment":
                 live.stop()
                 try:
-                    edit_global_env_file()
-                    load_global_env(override_existing=False)
+                    with edit_feedback():
+                        edit_global_env_file()
+                        load_global_env(override_existing=False)
                 except Exception as exc:
                     console.print(Panel.fit(Text(f"Failed to edit global environment: {exc}", style="bold red"), border_style="red"))
                     console.input("Press Enter to continue...")
@@ -551,7 +553,8 @@ def launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if field == "Custom Instructions":
                 live.stop()
                 try:
-                    edit_langcode_md(state["project_dir"])
+                    with edit_feedback():
+                        edit_langcode_md(state["project_dir"])
                 except Exception as exc:
                     console.print(Panel.fit(Text(f"Failed to edit custom instructions: {exc}", style="bold red"), border_style="red"))
                     console.input("Press Enter to continue...")
@@ -561,7 +564,8 @@ def launcher_loop(initial_state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             if field == "MCP Config":
                 live.stop()
                 try:
-                    edit_mcp_json(state["project_dir"])
+                    with edit_feedback():
+                        edit_mcp_json(state["project_dir"])
                 except Exception as exc:
                     console.print(Panel.fit(Text(f"Failed to edit MCP config: {exc}", style="bold red"), border_style="red"))
                     console.input("Press Enter to continue...")
