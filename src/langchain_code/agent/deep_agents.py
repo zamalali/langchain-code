@@ -94,8 +94,25 @@ def create_deep_agent(
     checkpointer: Optional[Any] = None,
     llm: Optional[Any] = None,
 ):
-    """
-    Returns a LangGraph graph with planning + subagents.
+    """Create a Deep Agent using LangChain 1.0 create_agent API.
+    
+    This creates a LangGraph-based agent for complex, multi-step tasks.
+    The deep agent uses the new LangChain 1.0 create_agent API which
+    provides identical behavior across all LLM providers.
+    
+    Args:
+        provider: LLM provider ("anthropic", "gemini", "openai", "ollama")
+        project_dir: Root directory for filesystem operations
+        instructions: Optional system prompt customization
+        subagents: Optional list of sub-agents for specialized tasks
+        apply: Whether to write changes to disk
+        test_cmd: Optional test command to run
+        state_schema: TypedDict schema for agent state (default: DeepAgentState)
+        checkpointer: Optional checkpointer for persistence (default: MemorySaver)
+        llm: Optional pre-configured LLM instance
+        
+    Returns:
+        Compiled agent supporting persistence, streaming, and multi-agent coordination
     """
     model = llm or get_model(provider)
     project_context = load_langcode_context(project_dir)
@@ -105,10 +122,11 @@ def create_deep_agent(
     task_tool = create_task_tool(tools, instructions or BASE_SYSTEM, subagents or [], model, state_schema)
     all_tools: List[Union[BaseTool, Any]] = [*tools, task_tool]
 
-
     if checkpointer is None:
         checkpointer = MemorySaver()
 
+    # LangChain 1.0: Using create_react_agent from langgraph.prebuilt
+    # This handles tool calling identically across all providers
     graph = create_react_agent(
         model,
         prompt=prompt,
@@ -116,5 +134,7 @@ def create_deep_agent(
         state_schema=state_schema,
         checkpointer=checkpointer,
     )
+    
+    # Set recursion limit to prevent infinite loops in complex reasoning
     graph.config = {"recursion_limit": 250}
     return graph

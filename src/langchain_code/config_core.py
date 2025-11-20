@@ -436,32 +436,44 @@ def _cached_chat_model(provider: str, model_name: str, temperature: float = 0.2)
     key = (provider, model_name, temperature)
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-        m = ChatAnthropic(model=model_name, temperature=temperature)
-    elif provider == "gemini":
-        gkey = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-        if not gkey:
-            raise RuntimeError(
-                "Missing GOOGLE_API_KEY / GEMINI_API_KEY. "
-                "Set one of these in your .env (same folder you chose as Project)."
-            )
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        m = ChatGoogleGenerativeAI(model=model_name, temperature=temperature, google_api_key=gkey, transport="rest")
-    elif provider == "openai":
-        from langchain_openai import ChatOpenAI
-        m = ChatOpenAI(model=model_name, temperature=temperature)
-    elif provider == "ollama": 
-        from langchain_ollama import ChatOllama 
-        base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_HOST") 
-        if base_url: 
-            m = ChatOllama(model=model_name, temperature=temperature, base_url=base_url, timeout=120, max_retries=2) 
-        else: 
-            m = ChatOllama(model=model_name, temperature=temperature)
-    else:
-        raise ValueError(f"Unknown provider: {provider}")
-    _MODEL_CACHE[key] = m
-    return m
+    try:
+        if provider == "anthropic":
+            from langchain_anthropic import ChatAnthropic
+            m = ChatAnthropic(model=model_name, temperature=temperature)
+        elif provider == "gemini":
+            gkey = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+            if not gkey:
+                raise RuntimeError(
+                    "Missing GOOGLE_API_KEY / GEMINI_API_KEY. "
+                    "Set one of these in your .env (same folder you chose as Project)."
+                )
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            m = ChatGoogleGenerativeAI(model=model_name, temperature=temperature, google_api_key=gkey, transport="rest")
+        elif provider == "openai":
+            from langchain_openai import ChatOpenAI
+            m = ChatOpenAI(model=model_name, temperature=temperature)
+        elif provider == "ollama": 
+            from langchain_ollama import ChatOllama 
+            base_url = os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_HOST") 
+            try:
+                if base_url: 
+                    m = ChatOllama(model=model_name, temperature=temperature, base_url=base_url, timeout=120, max_retries=2) 
+                else: 
+                    m = ChatOllama(model=model_name, temperature=temperature)
+            except Exception as ollama_err:
+                raise RuntimeError(
+                    f"Failed to initialize Ollama model '{model_name}'. "
+                    f"Ensure Ollama is running and the model is available. "
+                    f"Error: {str(ollama_err)}"
+                ) from ollama_err
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+        _MODEL_CACHE[key] = m
+        return m
+    except Exception as e:
+        if provider == "ollama":
+            raise RuntimeError(f"Ollama connection or initialization failed: {str(e)}") from e
+        raise
 
 def resolve_provider(cli_llm: str | None) -> str:
     if cli_llm:

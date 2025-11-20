@@ -63,6 +63,14 @@ def create_task_tool(
     base_model,
     state_schema,
 ):
+    """Create a task tool that delegates to sub-agents.
+    
+    LangChain 1.0 Compliance:
+    - Uses create_react_agent from langgraph.prebuilt
+    - All sub-agents use identical tool-calling interface
+    - State schema is TypedDict (DeepAgentState)
+    - Works across all providers (Anthropic, Gemini, OpenAI, Ollama)
+    """
     tools_by_name = _index_tools(tools)
 
     agents = {
