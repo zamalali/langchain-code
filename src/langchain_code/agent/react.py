@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any, List, Optional
 
-from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.agents import create_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import BaseTool
 from langgraph.types import Checkpointer
@@ -88,7 +88,24 @@ def build_react_agent(
     instruction_seed: Optional[str] = None,
     *,
     llm: Optional[Any] = None,
-) -> AgentExecutor:
+):
+    """Build a ReAct agent using LangChain 1.0 create_agent API.
+    
+    This creates a fast-loop agent for chat, reads, and targeted edits.
+    Uses the new LangChain 1.0 create_agent which handles tool calling
+    identically across all providers (Anthropic, Gemini, OpenAI, Ollama).
+    
+    Args:
+        provider: LLM provider ("anthropic", "gemini", "openai", "ollama")
+        project_dir: Root directory for filesystem operations
+        apply: Whether to write changes to disk
+        test_cmd: Optional test command to run
+        instruction_seed: Optional system prompt customization
+        llm: Optional pre-configured LLM instance
+        
+    Returns:
+        Compiled agent runnable supporting .invoke(), .stream(), etc.
+    """
     model = llm or get_model(provider)
     try:
         mcp_tools: List[BaseTool] = asyncio.run(get_mcp_tools(project_dir))
@@ -119,22 +136,17 @@ def build_react_agent(
         tool_list.append(t)
     tool_list.extend(make_mermaid_tools(str(project_dir)))
 
-    prompt = build_prompt(instruction_seed, project_dir)
-    agent = create_tool_calling_agent(model, tool_list, prompt)
+    system_prompt = build_prompt(instruction_seed, project_dir)
 
-    def _parse_err(e: Exception) -> str:
-        return f"Parsing error: {e.__class__.__name__}: {e}"
-
-    return AgentExecutor(
-        agent=agent,
+    # LangChain 1.0: create_agent is the new unified API
+    # Returns a compiled runnable that works across all providers identically
+    agent = create_agent(
+        model,
         tools=tool_list,
-        verbose=False,
-        max_iterations=20,
-        max_execution_time=300,
-        early_stopping_method="generate",
-        handle_parsing_errors=_parse_err,
-        return_intermediate_steps=True,
+        system_prompt=str(system_prompt)
     )
+    
+    return agent
 
 
 def build_deep_agent(

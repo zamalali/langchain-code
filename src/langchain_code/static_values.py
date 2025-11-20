@@ -106,12 +106,14 @@ RUNTIME_POLICY = """
 """.strip()
 
 BASE_DEEP_SUFFIX = """
-## Planning & TODOs
-- In your FIRST 1-2 tool calls, call `write_todos([...])` with ~3-8 concrete steps.
-- Before working a step, call `update_todo_status(index, "in_progress")`.
-- After finishing it, call `update_todo_status(index, "completed")`.
-- If you discover new work, call `append_todo("...")` and execute it.
-- Keep only one item "in_progress" at a time and keep todos verb-first and specific.
+## Planning & TODOs (MANDATORY)
+- FIRST THING: Call `write_todos([...])` with 3-8 concrete, verb-first steps BEFORE doing anything else.
+- Examples of steps: "Examine file structure", "Search for patterns", "Read implementation", "Summarize findings"
+- Before working on any step, call `update_todo_status(index, "in_progress")`.
+- After finishing a step, call `update_todo_status(index, "completed")`.
+- If you discover additional work, call `append_todo("...")` immediately.
+- Keep only ONE item marked "in_progress" at a time.
+- Always be specific: use file paths, function names, line numbers when applicable.
 
 ## Subagents
 - Prefer 'general-purpose' for iterative research/execution.

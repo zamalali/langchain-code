@@ -484,9 +484,26 @@ def chat(
 
             if mode == "react":
                 try:
-                    payload = {"input": coerced, "chat_history": history}
-                    if provider == "anthropic":
-                        payload["chat_history"] = normalize_chat_history_for_anthropic(payload["chat_history"])
+                    # LangChain 1.0: create_agent expects {"messages": [...]} format
+                    # Convert history to messages format
+                    react_messages = []
+                    for h in history:
+                        if isinstance(h, tuple) and len(h) == 2:
+                            if h[0] == "user":
+                                react_messages.append(HumanMessage(content=h[1]))
+                            elif h[0] == "assistant":
+                                react_messages.append(AIMessage(content=h[1]))
+                        elif isinstance(h, dict):
+                            role = h.get("role")
+                            content = h.get("content")
+                            if role == "user":
+                                react_messages.append(HumanMessage(content=content))
+                            elif role in {"assistant", "ai"}:
+                                react_messages.append(AIMessage(content=content))
+                    
+                    react_messages.append(HumanMessage(content=coerced))
+                    
+                    payload = {"messages": react_messages}
 
                     if verbose:
                         from ...cli_components.runtime import RichDeepLogs
@@ -496,23 +513,23 @@ def chat(
                         with show_loader():
                             res = agent.invoke(payload)
 
-                    output = res.get("output", "") if isinstance(res, dict) else str(res)
+                    # Extract output from new format
+                    if isinstance(res, dict):
+                        # Check for messages key (new LangChain 1.0 format)
+                        if "messages" in res:
+                            output = extract_last_content(res["messages"]).strip()
+                        else:
+                            output = res.get("output", "")
+                    else:
+                        output = str(res)
+                    
                     if provider == "anthropic":
                         from ...cli_components.display import to_text as _to_text
 
                         output = _to_text(output)
+                    
                     if not output.strip():
-                        steps = res.get("intermediate_steps") if isinstance(res, dict) else None
-                        if steps:
-                            previews = []
-                            for pair in steps[-3:]:
-                                try:
-                                    previews.append(str(pair))
-                                except Exception:
-                                    continue
-                            output = "Model returned empty output. Recent steps:\n" + "\n".join(previews)
-                        else:
-                            output = "No response generated. Try rephrasing your request."
+                        output = "No response generated. Try rephrasing your request."
                 except Exception as e:
                     from ...cli_components.runtime import _friendly_agent_error as friendly_error  # type: ignore
 
@@ -548,11 +565,12 @@ def chat(
                     deep_config["callbacks"] = [todo_cb]
                     res = {}
                     try:
-                        res = agent.invoke({"messages": msgs}, config=deep_config)
+                        res = agent.invoke({"messages": msgs, "remaining_steps": 250}, config=deep_config)
 
                         if isinstance(res, dict) and "messages" in res:
                             msgs = res["messages"]
                             last_files = res.get("files") or last_files
+                            last_todos = res.get("todos") or last_todos
                             last_content = extract_last_content(msgs).strip()
                         else:
                             last_content = ""
@@ -574,9 +592,10 @@ def chat(
                                 }
                             )
                             try:
-                                res2 = agent.invoke({"messages": msgs}, config=deep_config)
+                                res2 = agent.invoke({"messages": msgs, "remaining_steps": 250}, config=deep_config)
                                 if isinstance(res2, dict) and "messages" in res2:
                                     msgs = res2["messages"]
+                                    last_todos = res2.get("todos") or last_todos
                                 last_content = extract_last_content(msgs).strip()
                             except Exception as e:
                                 last_content = f"Agent failed after retry: {e}"
@@ -589,8 +608,13 @@ def chat(
                     if final_todos:
                         normalized_todos = _coerce_sequential_todos(final_todos)
                         animated_final = [{**todo, "status": todo.get("status", "pending")} for todo in normalized_todos]
-                        any_completed = any(todo.get("status") == "completed" for todo in animated_final)
-                        if not any_completed:
+                        
+                        # Always animate the todos progression (except if they were already all completed before)
+                        # Only skip animation if the todos came to us already fully completed
+                        all_were_already_completed = all(todo.get("status") == "completed" for todo in last_todos) and last_todos
+                        
+                        if not all_were_already_completed:
+                            # Animate the progression
                             for idx in range(len(animated_final)):
                                 step_view: List[dict] = []
                                 for j, todo in enumerate(animated_final):
